@@ -285,13 +285,18 @@ body {
     }
     body.slide-grid-mode .member-meta-line {
         font-size: 0.43rem;
-        line-height: 1.15;
+        line-height: 1.2;
         letter-spacing: -0.02em;
         white-space: normal;
         overflow: visible;
         text-overflow: clip;
-        word-break: break-all;
+        word-break: normal;
+        overflow-wrap: normal;
     }
+}
+.meta-part {
+    display: inline-block;
+    white-space: nowrap;
 }
     </style>
 </head>
@@ -343,6 +348,20 @@ body {
         return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
+    // 身長/体重などが途中で改行されないよう、「/」や「:」の区切り単位でまとめる
+    function formatMetaHtml(meta) {
+        const s = String(meta ?? '').trim();
+        if (!s) return '';
+        if (/^Position\s*[:：]/i.test(s)) {
+            const m = s.match(/^(Position\s*[:：]\s*)(.*)$/i);
+            if (m) {
+                return `<span class="meta-part">${esc(m[1])}</span><span class="meta-part">${esc(m[2])}</span>`;
+            }
+        }
+        const parts = s.match(/[^/]+\/?/g) || [s];
+        return parts.map(p => `<span class="meta-part">${esc(p)}</span>`).join('');
+    }
+
     function createCardElement(card) {
         const wrap = document.createElement('div');
         wrap.className = 'member-card' + (card.alert ? ' is-alert' : '');
@@ -354,7 +373,7 @@ body {
                     <div class="member-name-line">
                         <span>${esc(card.name)}</span><span class="member-note">${esc(card.note || '')}</span>
                     </div>
-                    <div class="member-meta-line">${esc(card.meta)}</div>
+                    <div class="member-meta-line">${formatMetaHtml(card.meta)}</div>
                 </div>
             </div>
         `;
