@@ -76,13 +76,40 @@
         }
     };
 
+    const EXTRA_KEY = 'tb-scouting-extra';
+    const WN_PREFIX = '__TB_EXTRA__:';
+
     function clone(obj) {
         return JSON.parse(JSON.stringify(obj));
     }
 
+    function readRawExtra() {
+        if (window.TBShared && window.TBShared.loadExtra) {
+            return window.TBShared.loadExtra();
+        }
+        if (window.__tbExtraMemory) return window.__tbExtraMemory;
+        try {
+            if (window.name && window.name.indexOf(WN_PREFIX) === 0) {
+                const parsed = JSON.parse(window.name.slice(WN_PREFIX.length));
+                if (parsed) {
+                    window.__tbExtraMemory = parsed;
+                    return parsed;
+                }
+            }
+        } catch (e) {}
+        try {
+            const ls = JSON.parse(localStorage.getItem(EXTRA_KEY) || 'null');
+            if (ls) {
+                window.__tbExtraMemory = ls;
+                return ls;
+            }
+        } catch (e) {}
+        return null;
+    }
+
     function getExtraData(publishedExtra) {
         const base = clone(DEFAULT_EXTRA);
-        const saved = publishedExtra !== undefined ? publishedExtra : (window.TBShared && window.TBShared.loadExtra ? window.TBShared.loadExtra() : null);
+        const saved = publishedExtra !== undefined ? publishedExtra : readRawExtra();
         if (!saved) return base;
         return {
             opponent: saved.opponent || base.opponent,
@@ -101,17 +128,26 @@
             pdfFileName: partial.pdfFileName !== undefined ? partial.pdfFileName : current.pdfFileName,
             memberList: partial.memberList !== undefined ? partial.memberList : current.memberList,
             cadence: partial.cadence !== undefined ? partial.cadence : current.cadence,
-            playDiagrams: partial.playDiagrams !== undefined ? partial.playDiagrams : current.playDiagrams
+            playDiagrams: partial.playDiagrams !== undefined ? partial.playDiagrams : current.playDiagrams,
+            updatedAt: new Date().toISOString()
         };
+        window.__tbExtraMemory = next;
+        try { window.name = WN_PREFIX + JSON.stringify(next); } catch (e) {}
         if (window.TBShared && window.TBShared.saveExtra) {
             window.TBShared.saveExtra(next);
+        } else {
+            try { localStorage.setItem(EXTRA_KEY, JSON.stringify(next)); } catch (e) {}
         }
         return next;
     }
 
     function resetExtraData() {
+        window.__tbExtraMemory = null;
+        try { if (window.name && window.name.indexOf(WN_PREFIX) === 0) window.name = ''; } catch (e) {}
         if (window.TBShared && window.TBShared.saveExtra) {
             window.TBShared.saveExtra(null);
+        } else {
+            try { localStorage.removeItem(EXTRA_KEY); } catch (e) {}
         }
         return clone(DEFAULT_EXTRA);
     }
@@ -306,7 +342,7 @@
     }
 
     // ページをCanvasで高品質・軽量なJPEG画像データURLにレンダリングする（複数試合でも軽快に動くよう最適化）
-    async function renderPageToJpeg(page, targetWidth = 960) {
+    async function renderPageToJpeg(page, targetWidth = 860) {
         const unscaled = page.getViewport({ scale: 1 });
         const scale = targetWidth / unscaled.width;
         const viewport = page.getViewport({ scale });
@@ -320,37 +356,47 @@
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         await page.render({ canvasContext: ctx, viewport }).promise;
-        return canvas.toDataURL('image/jpeg', 0.72);
+        return canvas.toDataURL('image/jpeg', 0.62);
     }
 
     // ページのトークンからPlay Diagramメタデータを抽出する
     function extractPlayDiagramMeta(tokens) {
-        // 上部 (top <= 80) のトークンをX座標順に並べる
+        // 上部 (top <= 90) のトークンをX座標順に並べる
         const topTokens = tokens
-            .filter(t => t.top <= 80)
+            .filter(t => t.top <= 90)
             .sort((a, b) => a.x - b.x);
 
         const combinedTopText = topTokens.map(t => t.text).join(' ').replace(/\s+/g, ' ').trim();
 
-        // スラッシュを2つ以上含み、かつ #数字 または vs または GUN を含むかチェック
+        // スラッシュを2つ以上含み、かつ #数字 / vs / Down-Dist / 代表的な体型名を含むかチェック
         const slashCount = (combinedTopText.match(/\//g) || []).length;
-        if (slashCount < 2 || !/#\d+|vs|GUN|TRIP|TRIO|ACE|TWIN|FLEX|EMPTY|I\s*FORM/i.test(combinedTopText)) {
+        if (slashCount < 2 || !/#\d+|vs|[1-4]\s*[-–]\s*\d+|GUN|TRIP|TRIO|ACE|TWIN|FLEX|EMPTY|I\s*FORM|PRO|WING|BUNCH|STACK|SPREAD|PISTOL/i.test(combinedTopText)) {
             return null;
         }
 
-        const parts = combinedTopText.split('/').map(s => s.trim()).filter(Boolean);
-        if (parts.length < 3) return null;
+        const rawParts = combinedTopText.split('/').map(s => s.trim());
+        if (rawParts.length < 3) return null;
 
-        let gamePlay = parts[0] || '';
-        let downDist = parts[1] || '';
-        let formation = parts[2] || '';
-        let playName = parts.slice(3).join(' / ') || '';
+        let gamePlay = rawParts[0] || '';
+        let downDist = rawParts[1] || '';
+        let formation = rawParts[2] || '';
+        let playName = rawParts.slice(3).join(' / ').trim() || '';
 
-        if (parts.length === 3) {
-            formation = parts[1];
-            playName = parts[2];
-            downDist = '';
+        if (rawParts.length === 3) {
+            if (/^[1-4]\s*[-–]/.test(rawParts[1])) {
+                downDist = rawParts[1];
+                formation = rawParts[2];
+                playName = '';
+            } else {
+                formation = rawParts[1];
+                playName = rawParts[2];
+                downDist = '';
+            }
         }
+
+        // 表記揺れの正規化（例: "3 STEP" -> "3STEP"）
+        playName = playName.replace(/\b([1235])\s+STEP\b/gi, '$1STEP').replace(/\s+/g, ' ').trim();
+        formation = formation.replace(/\s+/g, ' ').trim();
 
         const playNumMatch = gamePlay.match(/#(\d+)/);
         const playNum = playNumMatch ? parseInt(playNumMatch[1], 10) : 0;
@@ -368,7 +414,7 @@
         }
 
         // 図面内の注記テキスト（タイトル以外で、PPやOLやShift、赤文字注記など）
-        const noteTokens = tokens.filter(t => t.top > 80 && (
+        const noteTokens = tokens.filter(t => t.top > 85 && (
             t.top > 430 ||
             t.text.includes(':') ||
             /PP|OL|RG|LG|RT|LT|C\s*:|Slide|Man|Step|Fake|Pull|Shift|Kill|Flash|Motion|Trap|Boot|Naked|Screen|Pass|Lead/i.test(t.text)
@@ -506,9 +552,10 @@
             // 5. Play Diagram（プレー図面）ページ
             const pdMeta = extractPlayDiagramMeta(tokens);
             if (pdMeta) {
-                const image = await renderPageToJpeg(page, 1050);
+                const image = await renderPageToJpeg(page, 860);
                 playDiagrams.push({
                     page: p,
+                    sourcePdf: file.name,
                     ...pdMeta,
                     image
                 });
@@ -524,18 +571,33 @@
         }
 
         if (playDiagrams.length > 0) {
-            const existing = (getExtraData().playDiagrams || []);
-            // 複数試合のPDFをまとめてドロップしても蓄積されるようにマージ
-            const merged = existing.slice();
+            // 同一PDF内の試合名表記揺れ（例: vs Kandai と vs Kansai のタイポ）を最頻値の試合名に統一
+            const gameFreq = {};
             for (const pd of playDiagrams) {
-                const idx = merged.findIndex(m => m.title === pd.title);
-                if (idx !== -1) {
-                    merged[idx] = pd;
-                } else {
-                    merged.push(pd);
+                if (pd.gameName) gameFreq[pd.gameName] = (gameFreq[pd.gameName] || 0) + 1;
+            }
+            let dominantGame = '';
+            let maxCount = 0;
+            for (const g of Object.keys(gameFreq)) {
+                if (gameFreq[g] > maxCount) {
+                    maxCount = gameFreq[g];
+                    dominantGame = g;
                 }
             }
-            result.playDiagrams = merged;
+            if (dominantGame && maxCount >= playDiagrams.length * 0.5) {
+                for (const pd of playDiagrams) {
+                    pd.gameName = dominantGame;
+                }
+            }
+
+            const existing = (getExtraData().playDiagrams || []);
+            // 同じPDFファイル（または同じ試合名）の再取り込みなら入れ替え、別試合ならそのまま順番に追加
+            const filteredExisting = existing.filter(m => {
+                if (m.sourcePdf && m.sourcePdf === file.name) return false;
+                if (!m.sourcePdf && dominantGame && m.gameName === dominantGame) return false;
+                return true;
+            });
+            result.playDiagrams = filteredExisting.concat(playDiagrams);
         }
 
         if (result.memberList || result.cadence || (result.playDiagrams && result.playDiagrams.length)) {

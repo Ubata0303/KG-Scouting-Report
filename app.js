@@ -191,16 +191,21 @@ function setupDragAndDrop(element) {
 if (!IS_VIEWER) {
     setupDragAndDrop(dropZone);
     setupDragAndDrop(emptyState);
-    window.addEventListener('load', () => {
-        const extraSaved = window.TBShared && window.TBShared.loadExtra ? window.TBShared.loadExtra() : null;
-        if (extraSaved) {
+    const syncExtraBtnState = () => {
+        const extraSaved = (window.TBScoutingExtra && window.TBScoutingExtra.getExtraData ? window.TBScoutingExtra.getExtraData() : null)
+            || (window.TBShared && window.TBShared.loadExtra ? window.TBShared.loadExtra() : null);
+        const pdCount = extraSaved && Array.isArray(extraSaved.playDiagrams) ? extraSaved.playDiagrams.length : 0;
+        if (extraSaved && (extraSaved.pdfFileName || pdCount > 0)) {
             clearBtn.style.display = 'flex';
             exportAppBtn.style.display = 'flex';
-            if (rawGamesData.length === 0 && extraSaved.pdfFileName) {
-                uploadStatus.textContent = `PDF（${extraSaved.pdfFileName}）読み込み済み`;
+            if (rawGamesData.length === 0) {
+                const pdText = pdCount > 0 ? `（Play Diagram: ${pdCount}プレー）` : '';
+                uploadStatus.textContent = `PDF（${extraSaved.pdfFileName || '図面データ'}）読み込み済み${pdText}`;
             }
         }
-    });
+    };
+    window.addEventListener('load', syncExtraBtnState);
+    window.addEventListener('tb-extra-published', syncExtraBtnState);
 }
 
 async function handleFileUpload(e) {
@@ -214,11 +219,14 @@ async function handleFileUpload(e) {
     
     // クリアボタンが押されるまでデータを蓄積（追加）するように変更
     try {
-        // 1. PDF（Member List / Cadence）の取り込み
+        // 1. PDF（Member List / Cadence / Play Diagram）の取り込み
         let importedPdfName = null;
         if (pdfFiles.length > 0 && window.TBScoutingExtra && window.TBScoutingExtra.importFromPdfFile) {
-            for (const pf of pdfFiles) {
-                await window.TBScoutingExtra.importFromPdfFile(pf);
+            for (let pIdx = 0; pIdx < pdfFiles.length; pIdx++) {
+                const pf = pdfFiles[pIdx];
+                await window.TBScoutingExtra.importFromPdfFile(pf, (cur, total) => {
+                    uploadStatus.textContent = `PDF図面変換中 (${pIdx + 1}/${pdfFiles.length}ファイル: ${pf.name}) ページ ${cur}/${total}...`;
+                });
                 importedPdfName = pf.name;
             }
         }
@@ -252,9 +260,10 @@ async function handleFileUpload(e) {
             }
         }
 
-        const extraSaved = window.TBShared && window.TBShared.loadExtra ? window.TBShared.loadExtra() : null;
-        const pdfLabel = (importedPdfName || (extraSaved && extraSaved.pdfFileName))
-            ? ` ＋ PDF（${importedPdfName || extraSaved.pdfFileName}）`
+        const extraNow = window.TBScoutingExtra ? window.TBScoutingExtra.getExtraData() : (window.TBShared && window.TBShared.loadExtra ? window.TBShared.loadExtra() : null);
+        const pdCount = extraNow && Array.isArray(extraNow.playDiagrams) ? extraNow.playDiagrams.length : 0;
+        const pdfLabel = (importedPdfName || (extraNow && extraNow.pdfFileName) || pdCount > 0)
+            ? ` ＋ PDF${pdCount > 0 ? `（Play Diagram ${pdCount}プレー）` : `（${importedPdfName || extraNow.pdfFileName}）`}`
             : '';
 
         if (rawGamesData.length > 0) {
@@ -263,11 +272,9 @@ async function handleFileUpload(e) {
             uploadStatus.textContent = `読み込み完了（${parsedGamesData.length} 試合${pdfLabel}）`;
             showDashboard();
         } else if (importedPdfName) {
-            const extraNow = window.TBScoutingExtra ? window.TBScoutingExtra.getExtraData() : null;
-            const pdCount = extraNow && extraNow.playDiagrams ? extraNow.playDiagrams.length : 0;
             const extraMsg = pdCount > 0
-                ? `PDF（${importedPdfName}）から Play Diagram（${pdCount} プレー）を取り込みました！`
-                : `PDF（${importedPdfName}）から Member List・Cadence を取り込みました！`;
+                ? `✓ PDF取り込み完了！ Play Diagram（合計 ${pdCount} プレー）を登録しました！`
+                : `✓ PDF（${importedPdfName}）から Member List・Cadence を取り込みました！`;
             uploadStatus.textContent = extraMsg;
         }
 
@@ -287,7 +294,9 @@ function showDashboard() {
 
 // 母体：閲覧アプリ用のデータファイル（data.json）を書き出す
 async function exportAppData() {
-    const hasExtra = !!(window.TBShared && window.TBShared.loadExtra && window.TBShared.loadExtra());
+    const extraObj = (window.TBScoutingExtra && window.TBScoutingExtra.getExtraData ? window.TBScoutingExtra.getExtraData() : null)
+        || (window.TBShared && window.TBShared.loadExtra ? window.TBShared.loadExtra() : null);
+    const hasExtra = !!(extraObj && (extraObj.pdfFileName || (extraObj.playDiagrams && extraObj.playDiagrams.length > 0) || extraObj.memberList));
     if (rawGamesData.length === 0 && !hasExtra) return;
     if (!window.TBSecure || !window.TBSecure.cryptoAvailable()) {
         alert('このブラウザでは暗号化できません。Chrome か Safari の最新版で開いてください。');
@@ -304,8 +313,8 @@ async function exportAppData() {
         files: (window.TBShared && window.TBShared.load()) ? window.TBShared.load().files : [],
         // Down & Distance 画面のヤード設定（未設定なら初期値のまま）
         ddSettings: (window.TBShared && window.TBShared.loadDdSettings()) || null,
-        // Member List / Cadence のデータ
-        scoutingExtra: (window.TBShared && window.TBShared.loadExtra && window.TBShared.loadExtra()) || (window.TBScoutingExtra && window.TBScoutingExtra.getExtraData()) || null
+        // Member List / Cadence / Play Diagram のデータ
+        scoutingExtra: extraObj
     };
     // パスワードで暗号化してから書き出す
     const encrypted = await window.TBSecure.encrypt(payload, password);

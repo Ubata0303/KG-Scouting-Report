@@ -124,7 +124,9 @@
             parts.push(`Excel：${store.files.map(f => f.name).join('、')}（${when}）`);
         }
         if (extra) {
-            const label = extra.pdfFileName ? `PDF：${extra.pdfFileName}` : 'Member List / Cadence（更新済み）';
+            const pdLen = Array.isArray(extra.playDiagrams) ? extra.playDiagrams.length : 0;
+            const pdText = pdLen > 0 ? `（Play Diagram: ${pdLen}プレー）` : '';
+            const label = extra.pdfFileName ? `PDF：${extra.pdfFileName}${pdText}` : `Member List / Cadence${pdText}（更新済み）`;
             parts.push(label);
         }
         el.textContent = `共有データ：${parts.join(' ＋ ')} — 全画面で自動で読み込まれます`;
@@ -156,27 +158,109 @@
         return st;
     }
 
-    // ---------- Member List / Cadence 用のデータ保存・共有 ----------
+    // ---------- Member List / Cadence / Play Diagram 用のデータ保存・共有 ----------
+    // localStorageの5MB上限を超える複数試合の図面データも確実に保持できるよう、
+    // メモリ + window.name (同一タブ画面遷移用・同期) + IndexedDB (永続大容量) + localStorage を併用する。
     const EXTRA_KEY = 'tb-scouting-extra';
-    function loadExtra() {
-        try { return JSON.parse(localStorage.getItem(EXTRA_KEY) || 'null'); } catch (e) { return null; }
+    const WN_PREFIX = '__TB_EXTRA__:';
+    const IDB_NAME = 'tb-scouting-db';
+    const IDB_STORE = 'kv';
+
+    function openIdb() {
+        return new Promise((resolve, reject) => {
+            if (typeof indexedDB === 'undefined') return reject(new Error('no idb'));
+            try {
+                const req = indexedDB.open(IDB_NAME, 1);
+                req.onupgradeneeded = () => {
+                    const db = req.result;
+                    if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            } catch (e) { reject(e); }
+        });
     }
-    function saveExtra(partial) {
+
+    function idbSet(key, val) {
+        openIdb().then(db => {
+            const tx = db.transaction(IDB_STORE, 'readwrite');
+            const st = tx.objectStore(IDB_STORE);
+            if (val === null || val === undefined) st.delete(key);
+            else st.put(val, key);
+        }).catch(() => {});
+    }
+
+    function idbGet(key) {
+        return openIdb().then(db => new Promise((resolve, reject) => {
+            const tx = db.transaction(IDB_STORE, 'readonly');
+            const req = tx.objectStore(IDB_STORE).get(key);
+            req.onsuccess = () => resolve(req.result || null);
+            req.onerror = () => reject(req.error);
+        })).catch(() => null);
+    }
+
+    function loadExtra() {
+        if (window.__tbExtraMemory) return window.__tbExtraMemory;
         try {
-            if (!partial) {
-                localStorage.removeItem(EXTRA_KEY);
-                if (!IS_VIEWER) renderBanner();
-                return true;
+            if (window.name && window.name.indexOf(WN_PREFIX) === 0) {
+                const parsed = JSON.parse(window.name.slice(WN_PREFIX.length));
+                if (parsed) {
+                    window.__tbExtraMemory = parsed;
+                    return parsed;
+                }
             }
-            const prev = loadExtra() || {};
-            const next = Object.assign({}, prev, partial, { updatedAt: new Date().toISOString() });
-            localStorage.setItem(EXTRA_KEY, JSON.stringify(next));
+        } catch (e) {}
+        try {
+            const ls = JSON.parse(localStorage.getItem(EXTRA_KEY) || 'null');
+            if (ls) {
+                window.__tbExtraMemory = ls;
+                return ls;
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    function saveExtra(partial) {
+        if (!partial) {
+            window.__tbExtraMemory = null;
+            try { if (window.name && window.name.indexOf(WN_PREFIX) === 0) window.name = ''; } catch (e) {}
+            try { localStorage.removeItem(EXTRA_KEY); } catch (e) {}
+            idbSet(EXTRA_KEY, null);
             if (!IS_VIEWER) renderBanner();
             return true;
-        } catch (e) {
-            console.warn('Member/Cadenceデータを保存できませんでした:', e);
-            return false;
         }
+        const prev = loadExtra() || {};
+        const next = Object.assign({}, prev, partial, { updatedAt: new Date().toISOString() });
+        window.__tbExtraMemory = next;
+        try { window.name = WN_PREFIX + JSON.stringify(next); } catch (e) {}
+        idbSet(EXTRA_KEY, next);
+        try {
+            localStorage.setItem(EXTRA_KEY, JSON.stringify(next));
+        } catch (e) {
+            // 5MB上限を超えた場合は図面画像を除いた軽量版をlocalStorageに保存（図面本体はwindow.nameとIndexedDBに保持）
+            try {
+                const light = Object.assign({}, next, { playDiagrams: prev.playDiagrams ? [] : undefined });
+                localStorage.setItem(EXTRA_KEY, JSON.stringify(light));
+            } catch (_) {}
+        }
+        if (!IS_VIEWER) renderBanner();
+        return true;
+    }
+
+    // 起動時にIndexedDBからも復元（タブを開き直した場合などに対応）
+    if (!IS_VIEWER) {
+        idbGet(EXTRA_KEY).then(idbVal => {
+            if (!idbVal) return;
+            const cur = loadExtra();
+            const curLen = cur && Array.isArray(cur.playDiagrams) ? cur.playDiagrams.length : 0;
+            const idbLen = Array.isArray(idbVal.playDiagrams) ? idbVal.playDiagrams.length : 0;
+            if (!cur || idbLen > curLen || (idbVal.updatedAt && (!cur.updatedAt || idbVal.updatedAt > cur.updatedAt))) {
+                window.__tbExtraMemory = idbVal;
+                try { window.name = WN_PREFIX + JSON.stringify(idbVal); } catch (e) {}
+                renderBanner();
+                window.dispatchEvent(new CustomEvent('tb-extra-published', { detail: idbVal }));
+            }
+        });
     }
 
     async function feedFromPublished() {
