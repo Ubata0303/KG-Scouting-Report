@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Play Diagram - Scouting Report</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+:root {
+    --bg-color: #f1f5f9;
+    --card-bg: #ffffff;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #94a3b8;
+    --accent-blue: #2563eb;
+    --accent-red: #dc2626;
+    --border-color: #e2e8f0;
+    --border-dark: #cbd5e1;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Meiryo', 'Inter', -apple-system, sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-primary);
+    min-height: 100vh;
+    padding: 1rem 0.75rem 3rem;
+    -webkit-font-smoothing: antialiased;
+}
+
+.container {
+    max-width: 1100px;
+    margin: 0 auto;
+}
+
+/* フィルターバー（Sticky） */
+.filter-card {
+    background: var(--card-bg);
+    border-radius: 14px;
+    padding: 0.85rem 1rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    border: 1px solid var(--border-color);
+    margin-bottom: 1rem;
+    position: sticky;
+    top: 56px;
+    z-index: 100;
+}
+.filter-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 8px;
+    align-items: center;
+}
+.filter-group {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.filter-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.filter-select {
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: #fff;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.15s;
+    width: 100%;
+}
+.filter-select:focus {
+    border-color: var(--accent-blue);
+}
+.filter-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid #f1f5f9;
+}
+.count-badge {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+}
+.count-badge b {
+    color: var(--accent-blue);
+    font-size: 0.95rem;
+}
+.reset-btn {
+    background: none;
+    border: 1px solid var(--border-color);
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+    cursor: pointer;
+}
+.reset-btn:active {
+    background: #f8fafc;
+}
+
+/* プレーカード一覧 */
+.play-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 1rem;
+}
+@media (max-width: 640px) {
+    .play-grid {
+        grid-template-columns: 1fr;
+        gap: 0.85rem;
+    }
+}
+
+.play-card {
+    background: var(--card-bg);
+    border-radius: 12px;
+    border: 1px solid var(--border-color);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.play-card:active {
+    transform: scale(0.99);
+}
+.play-card-head {
+    padding: 9px 12px;
+    background: #f8fafc;
+    border-bottom: 1px solid #e2e8f0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.play-badge-group {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+.badge-game {
+    background: #ecfdf5;
+    color: #047857;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 5px;
+    border: 1px solid #a7f3d0;
+}
+.badge-num {
+    background: var(--accent-blue);
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 800;
+    padding: 2px 6px;
+    border-radius: 5px;
+}
+.badge-dd {
+    background: #fee2e2;
+    color: var(--accent-red);
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 5px;
+    border: 1px solid #fecaca;
+}
+.badge-form {
+    background: #e2e8f0;
+    color: #334155;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 5px;
+}
+.play-title-main {
+    font-size: 0.92rem;
+    font-weight: 800;
+    color: var(--text-primary);
+    word-break: break-word;
+}
+.play-card-body {
+    padding: 6px 8px;
+    background: #ffffff;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 180px;
+}
+.play-card-img {
+    width: 100%;
+    height: auto;
+    max-height: 260px;
+    object-fit: contain;
+    border-radius: 4px;
+    background: #fff;
+}
+.play-card-footer {
+    padding: 6px 12px;
+    background: #fafafa;
+    border-top: 1px solid #f1f5f9;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    min-height: 30px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.notes-tag {
+    background: #fff1f2;
+    color: #be123c;
+    border: 1px solid #ffe4e6;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+
+/* 空状態メッセージ */
+.empty-msg {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 3rem 1rem;
+    background: #fff;
+    border-radius: 12px;
+    border: 1px dashed var(--border-dark);
+    color: var(--text-muted);
+}
+.empty-msg h3 {
+    font-size: 1.05rem;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
+/* 全画面拡大モーダル */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.9);
+    backdrop-filter: blur(4px);
+    z-index: 4000;
+    display: none;
+    flex-direction: column;
+    padding: 10px;
+    box-sizing: border-box;
+}
+.modal-overlay.active {
+    display: flex;
+}
+.modal-top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: #fff;
+    padding: 8px 10px;
+    flex-shrink: 0;
+}
+.modal-play-info {
+    font-size: 0.92rem;
+    font-weight: 700;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.modal-close-btn {
+    background: rgba(255, 255, 255, 0.15);
+    border: none;
+    color: #fff;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    font-size: 1.4rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.modal-close-btn:active {
+    background: rgba(255, 255, 255, 0.35);
+}
+.modal-img-container {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+    padding: 6px 0;
+}
+.modal-img {
+    max-width: 98vw;
+    max-height: 82vh;
+    object-fit: contain;
+    background: #fff;
+    border-radius: 6px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    user-select: none;
+}
+.modal-nav-btn {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    width: 42px;
+    height: 56px;
+    border-radius: 8px;
+    font-size: 1.7rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.modal-nav-btn:active {
+    background: rgba(0, 0, 0, 0.85);
+}
+.modal-nav-btn.prev {
+    left: 8px;
+}
+.modal-nav-btn.next {
+    right: 8px;
+}
+.modal-bottom-bar {
+    padding: 6px 10px;
+    color: #cbd5e1;
+    font-size: 0.8rem;
+    text-align: center;
+    flex-shrink: 0;
+}
+    </style>
+</head>
+<body data-mode="viewer" data-extra-page="true">
+    <div class="container">
+        <!-- 絞り込みフィルター -->
+        <div class="filter-card">
+            <div class="filter-grid">
+                <div class="filter-group">
+                    <label class="filter-label" for="filter-game">試合 (Game)</label>
+                    <select id="filter-game" class="filter-select">
+                        <option value="ALL">全試合 (ALL)</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label class="filter-label" for="filter-play">Play名</label>
+                    <select id="filter-play" class="filter-select">
+                        <option value="ALL">すべて (ALL)</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label class="filter-label" for="filter-formation">体型 (Formation)</label>
+                    <select id="filter-formation" class="filter-select">
+                        <option value="ALL">すべて (ALL)</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label class="filter-label" for="filter-down">Down</label>
+                    <select id="filter-down" class="filter-select">
+                        <option value="ALL">すべて (ALL)</option>
+                        <option value="1">1st Down</option>
+                        <option value="2">2nd Down</option>
+                        <option value="3">3rd Down</option>
+                        <option value="4">4th Down</option>
+                    </select>
+                </div>
+            </div>
+            <div class="filter-meta">
+                <span class="count-badge" id="count-badge">表示中: <b>0</b> / 0 プレー</span>
+                <button type="button" class="reset-btn" id="reset-filter-btn">✕ 解除</button>
+            </div>
+        </div>
+
+        <!-- プレーカード一覧（初期表示はインポート順） -->
+        <div class="play-grid" id="play-grid"></div>
+    </div>
+
+    <!-- 全画面拡大モーダル -->
+    <div class="modal-overlay" id="modal-overlay">
+        <div class="modal-top-bar">
+            <div class="modal-play-info" id="modal-play-info">#1 1-10 DRAW PAP</div>
+            <button type="button" class="modal-close-btn" id="modal-close-btn" aria-label="閉じる">×</button>
+        </div>
+        <div class="modal-img-container">
+            <button type="button" class="modal-nav-btn prev" id="modal-prev-btn" aria-label="前へ">‹</button>
+            <img src="" alt="Play Diagram" class="modal-img" id="modal-img">
+            <button type="button" class="modal-nav-btn next" id="modal-next-btn" aria-label="次へ">›</button>
+        </div>
+        <div class="modal-bottom-bar" id="modal-bottom-bar">1 / 59 プレー</div>
+    </div>
+
+    <script src="scouting-extra.js"></script>
+    <script>
+(function () {
+    const filterGame = document.getElementById('filter-game');
+    const filterPlay = document.getElementById('filter-play');
+    const filterFormation = document.getElementById('filter-formation');
+    const filterDown = document.getElementById('filter-down');
+    const resetFilterBtn = document.getElementById('reset-filter-btn');
+    const countBadge = document.getElementById('count-badge');
+    const playGrid = document.getElementById('play-grid');
+
+    const modalOverlay = document.getElementById('modal-overlay');
+    const modalImg = document.getElementById('modal-img');
+    const modalPlayInfo = document.getElementById('modal-play-info');
+    const modalBottomBar = document.getElementById('modal-bottom-bar');
+    const modalCloseBtn = document.getElementById('modal-close-btn');
+    const modalPrevBtn = document.getElementById('modal-prev-btn');
+    const modalNextBtn = document.getElementById('modal-next-btn');
+
+    let allDiagrams = [];
+    let filteredDiagrams = [];
+    let currentModalIndex = 0;
+
+    function initData(customExtra) {
+        const extra = window.TBScoutingExtra.getExtraData(customExtra);
+        allDiagrams = Array.isArray(extra.playDiagrams) ? extra.playDiagrams : [];
+        populateFilterOptions();
+        applyFilters();
+    }
+
+    function populateFilterOptions() {
+        const gameCounts = {};
+        const playCounts = {};
+        const formationCounts = {};
+
+        allDiagrams.forEach(d => {
+            const g = (d.gameName || '').trim();
+            if (g) gameCounts[g] = (gameCounts[g] || 0) + 1;
+
+            const p = (d.playName || '').trim();
+            if (p) playCounts[p] = (playCounts[p] || 0) + 1;
+
+            const f = (d.formation || '').trim();
+            if (f) formationCounts[f] = (formationCounts[f] || 0) + 1;
+        });
+
+        // 試合名の選択肢
+        const prevGameVal = filterGame.value;
+        filterGame.innerHTML = '<option value="ALL">全試合 (ALL)</option>';
+        Object.keys(gameCounts).sort().forEach(g => {
+            const opt = document.createElement('option');
+            opt.value = g;
+            opt.textContent = `${g} (${gameCounts[g]})`;
+            filterGame.appendChild(opt);
+        });
+        if (gameCounts[prevGameVal]) filterGame.value = prevGameVal;
+
+        const prevPlayVal = filterPlay.value;
+        filterPlay.innerHTML = '<option value="ALL">すべて (ALL)</option>';
+        Object.keys(playCounts).sort().forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p;
+            opt.textContent = `${p} (${playCounts[p]})`;
+            filterPlay.appendChild(opt);
+        });
+        if (playCounts[prevPlayVal]) filterPlay.value = prevPlayVal;
+
+        const prevFormVal = filterFormation.value;
+        filterFormation.innerHTML = '<option value="ALL">すべて (ALL)</option>';
+        Object.keys(formationCounts).sort().forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f;
+            opt.textContent = `${f} (${formationCounts[f]})`;
+            filterFormation.appendChild(opt);
+        });
+        if (formationCounts[prevFormVal]) filterFormation.value = prevFormVal;
+    }
+
+    // 絞り込み実行（初期表示はインポート順のまま！）
+    function applyFilters() {
+        const selGame = filterGame.value;
+        const selPlay = filterPlay.value;
+        const selForm = filterFormation.value;
+        const selDown = filterDown.value;
+
+        filteredDiagrams = allDiagrams.filter(d => {
+            if (selGame !== 'ALL' && d.gameName !== selGame) return false;
+            if (selPlay !== 'ALL' && d.playName !== selPlay) return false;
+            if (selForm !== 'ALL' && d.formation !== selForm) return false;
+            if (selDown !== 'ALL' && String(d.down) !== String(selDown)) return false;
+            return true;
+        });
+
+        renderGrid();
+    }
+
+    function renderGrid() {
+        countBadge.innerHTML = `表示中: <b>${filteredDiagrams.length}</b> / ${allDiagrams.length} プレー`;
+
+        if (filteredDiagrams.length === 0) {
+            playGrid.innerHTML = `
+                <div class="empty-msg">
+                    <h3>該当するプレー図面がありません</h3>
+                    <p>フィルター条件を変更してください。</p>
+                </div>
+            `;
+            return;
+        }
+
+        playGrid.innerHTML = '';
+        filteredDiagrams.forEach((d, idx) => {
+            const card = document.createElement('div');
+            card.className = 'play-card';
+
+            const gameBadge = d.gameName ? `<span class="badge-game">${esc(d.gameName)}</span>` : '';
+            const numText = d.playNum ? `#${d.playNum}` : (d.page ? `P.${d.page}` : '');
+            const ddText = d.downDist || '';
+            const formText = d.formation || '';
+            const playText = d.playName || 'PLAY';
+            const notesText = d.notes ? `<span class="notes-tag">💬 ${esc(d.notes)}</span>` : '';
+
+            card.innerHTML = `
+                <div class="play-card-head">
+                    <div class="play-badge-group">
+                        ${gameBadge}
+                        ${numText ? `<span class="badge-num">${esc(numText)}</span>` : ''}
+                        ${ddText ? `<span class="badge-dd">${esc(ddText)}</span>` : ''}
+                        ${formText ? `<span class="badge-form">${esc(formText)}</span>` : ''}
+                    </div>
+                    <div class="play-title-main">${esc(playText)}</div>
+                </div>
+                <div class="play-card-body">
+                    <img src="${d.image}" alt="${esc(playText)}" class="play-card-img" loading="lazy">
+                </div>
+                ${notesText ? `<div class="play-card-footer">${notesText}</div>` : ''}
+            `;
+
+            card.addEventListener('click', () => openModal(idx));
+            playGrid.appendChild(card);
+        });
+    }
+
+    function esc(s) {
+        return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function openModal(index) {
+        if (!filteredDiagrams[index]) return;
+        currentModalIndex = index;
+        updateModalContent();
+        modalOverlay.classList.add('active');
+        document.body.style.overflow = 'hidden';
+    }
+
+    function closeModal() {
+        modalOverlay.classList.remove('active');
+        document.body.style.overflow = '';
+    }
+
+    function updateModalContent() {
+        const d = filteredDiagrams[currentModalIndex];
+        if (!d) return;
+
+        modalImg.src = d.image;
+        const numText = d.playNum ? `#${d.playNum}` : `P.${d.page}`;
+        modalPlayInfo.innerHTML = `
+            ${d.gameName ? `<span style="color:#6ee7b7;font-size:0.8rem;">[${esc(d.gameName)}]</span>` : ''}
+            <span style="color:#60a5fa;font-weight:800;">${esc(numText)}</span>
+            ${d.downDist ? `<span style="color:#f87171;">${esc(d.downDist)}</span>` : ''}
+            ${d.formation ? `<span style="color:#cbd5e1;">${esc(d.formation)}</span>` : ''}
+            <span style="color:#fff;font-size:1.05rem;font-weight:800;">${esc(d.playName)}</span>
+        `;
+        modalBottomBar.textContent = `${currentModalIndex + 1} / ${filteredDiagrams.length} プレー ${d.notes ? '｜ ' + d.notes : ''}`;
+    }
+
+    function prevModal() {
+        if (currentModalIndex > 0) {
+            currentModalIndex--;
+            updateModalContent();
+        } else {
+            currentModalIndex = filteredDiagrams.length - 1;
+            updateModalContent();
+        }
+    }
+
+    function nextModal() {
+        if (currentModalIndex < filteredDiagrams.length - 1) {
+            currentModalIndex++;
+            updateModalContent();
+        } else {
+            currentModalIndex = 0;
+            updateModalContent();
+        }
+    }
+
+    filterGame.addEventListener('change', applyFilters);
+    filterPlay.addEventListener('change', applyFilters);
+    filterFormation.addEventListener('change', applyFilters);
+    filterDown.addEventListener('change', applyFilters);
+    resetFilterBtn.addEventListener('click', () => {
+        filterGame.value = 'ALL';
+        filterPlay.value = 'ALL';
+        filterFormation.value = 'ALL';
+        filterDown.value = 'ALL';
+        applyFilters();
+    });
+
+    modalCloseBtn.addEventListener('click', closeModal);
+    modalPrevBtn.addEventListener('click', prevModal);
+    modalNextBtn.addEventListener('click', nextModal);
+    modalOverlay.addEventListener('click', e => {
+        if (e.target === modalOverlay || e.target.classList.contains('modal-img-container')) {
+            closeModal();
+        }
+    });
+
+    document.addEventListener('keydown', e => {
+        if (!modalOverlay.classList.contains('active')) return;
+        if (e.key === 'Escape') closeModal();
+        if (e.key === 'ArrowLeft') prevModal();
+        if (e.key === 'ArrowRight') nextModal();
+    });
+
+    let touchStartX = 0;
+    let touchEndX = 0;
+    modalOverlay.addEventListener('touchstart', e => {
+        touchStartX = e.changedTouches[0].screenX;
+    }, { passive: true });
+    modalOverlay.addEventListener('touchend', e => {
+        touchEndX = e.changedTouches[0].screenX;
+        const diff = touchEndX - touchStartX;
+        if (Math.abs(diff) > 40) {
+            if (diff > 0) prevModal();
+            else nextModal();
+        }
+    }, { passive: true });
+
+    // 公開データ（data.json）が復号されたときのイベント
+    window.addEventListener('tb-extra-published', e => {
+        initData(e.detail);
+    });
+
+    initData();
+})();
+    </script>
+    <script src="menu.js"></script>
+    <script src="secure-data.js"></script>
+    <script src="shared-data.js"></script>
+</body>
+</html>

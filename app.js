@@ -263,7 +263,12 @@ async function handleFileUpload(e) {
             uploadStatus.textContent = `読み込み完了（${parsedGamesData.length} 試合${pdfLabel}）`;
             showDashboard();
         } else if (importedPdfName) {
-            uploadStatus.textContent = `PDF（${importedPdfName}）から Member List・Cadence を取り込みました！`;
+            const extraNow = window.TBScoutingExtra ? window.TBScoutingExtra.getExtraData() : null;
+            const pdCount = extraNow && extraNow.playDiagrams ? extraNow.playDiagrams.length : 0;
+            const extraMsg = pdCount > 0
+                ? `PDF（${importedPdfName}）から Play Diagram（${pdCount} プレー）を取り込みました！`
+                : `PDF（${importedPdfName}）から Member List・Cadence を取り込みました！`;
+            uploadStatus.textContent = extraMsg;
         }
 
         clearBtn.style.display = 'flex';
@@ -365,8 +370,8 @@ function readExcelFile(file) {
     });
 }
 
-// 1つのシートに複数試合が入っている場合、OPP TEAM（＋SEASON）が変わるところで試合を分ける
-// （同じ相手と2回やった場合も、間に別の相手がいれば別の試合になる）
+// 1つのシートに複数試合が入っている場合、OPP TEAM（＋SEASON）ごとに試合を分ける
+// 同じ相手の行が途中で離れていても、同じ相手なら1つのグループにまとめる
 function splitGamesByOpponent(game) {
     const rows = game.data || [];
     let headerRowIdx = -1, oppCol = -1, seasonCol = -1;
@@ -383,25 +388,114 @@ function splitGamesByOpponent(game) {
     if (headerRowIdx === -1 || oppCol === -1) return [game];
 
     const head = rows.slice(0, headerRowIdx + 1);
-    const segments = [];
+    const groups = new Map();
+    const keyOrder = [];
     let currentKey = null;
+
     for (let i = headerRowIdx + 1; i < rows.length; i++) {
         const row = rows[i] || [];
         const opp = String(row[oppCol] || '').trim();
         const season = seasonCol !== -1 ? String(row[seasonCol] || '').trim() : '';
         const key = opp ? `${season}|${opp}` : currentKey; // 空欄の行は直前の試合に含める
-        if (key !== currentKey || segments.length === 0) {
-            segments.push([]);
-            currentKey = key;
+        if (!key) continue;
+        currentKey = key;
+
+        if (!groups.has(key)) {
+            groups.set(key, []);
+            keyOrder.push(key);
         }
-        segments[segments.length - 1].push(row);
+        groups.get(key).push(row);
     }
-    if (segments.length <= 1) return [game];
-    return segments.map((segRows, idx) => ({ gameName: `${game.gameName} #${idx + 1}`, data: head.concat(segRows) }));
+    if (keyOrder.length <= 1) return [game];
+    return keyOrder.map((key, idx) => ({
+        gameName: `${game.gameName} #${idx + 1}`,
+        data: head.concat(groups.get(key))
+    }));
+}
+
+// 試合名（または対戦相手名）を特定する
+function getGameTargetName(game) {
+    const rows = game.data || [];
+    let headerRowIdx = -1, oppCol = -1, seasonCol = -1;
+    for (let i = 0; i < Math.min(rows.length, 30); i++) {
+        const cells = (rows[i] || []).map(c => String(c || '').trim().toUpperCase());
+        const hasType = cells.includes('PLAY TYPE(D)') || cells.includes('PLAY TYPE');
+        if (hasType && cells.includes('PERSONNEL') && cells.includes('OFF FORM')) {
+            headerRowIdx = i;
+            oppCol = cells.findIndex(c => c === 'OPP TEAM' || c === 'OPPONENT');
+            seasonCol = cells.indexOf('SEASON');
+            break;
+        }
+    }
+    if (headerRowIdx !== -1 && oppCol !== -1) {
+        for (let i = headerRowIdx + 1; i < rows.length; i++) {
+            const row = rows[i] || [];
+            const opp = String(row[oppCol] || '').trim();
+            const season = seasonCol !== -1 ? String(row[seasonCol] || '').trim() : '';
+            if (opp) {
+                return season ? `${season} vs ${opp}` : `vs ${opp}`;
+            }
+        }
+    }
+    return game.gameName;
+}
+
+// 同じ対戦相手（同じ試合名）のデータは、シートやファイルが分かれていても1つの試合に合体する
+function mergeGamesByName(gameList) {
+    const map = new Map();
+    const order = [];
+
+    gameList.forEach(game => {
+        const targetName = getGameTargetName(game);
+        const rows = game.data || [];
+
+        let headerRowIdx = -1;
+        for (let i = 0; i < Math.min(rows.length, 30); i++) {
+            const cells = (rows[i] || []).map(c => String(c || '').trim().toUpperCase());
+            const hasType = cells.includes('PLAY TYPE(D)') || cells.includes('PLAY TYPE');
+            if (hasType && cells.includes('PERSONNEL') && cells.includes('OFF FORM')) {
+                headerRowIdx = i;
+                break;
+            }
+        }
+        const head = headerRowIdx !== -1 ? rows.slice(0, headerRowIdx + 1) : (rows.length > 0 ? [rows[0]] : []);
+        const headerRow = headerRowIdx !== -1 ? rows[headerRowIdx] : (rows[0] || []);
+        const body = headerRowIdx !== -1 ? rows.slice(headerRowIdx + 1) : rows.slice(1);
+
+        if (!map.has(targetName)) {
+            map.set(targetName, { gameName: targetName, head, headerRow, rows: [] });
+            order.push(targetName);
+        }
+        const item = map.get(targetName);
+
+        // ヘッダー列が一致していればそのまま追加、異なれば列順を合わせる
+        const baseHeader = (item.headerRow || []).map(c => String(c || '').trim().toUpperCase());
+        const curHeader = (headerRow || []).map(c => String(c || '').trim().toUpperCase());
+        const isSameHeader = baseHeader.length === curHeader.length && baseHeader.every((c, idx) => c === curHeader[idx]);
+
+        if (isSameHeader) {
+            item.rows.push(...body);
+        } else {
+            const colMap = baseHeader.map(colName => curHeader.indexOf(colName));
+            body.forEach(row => {
+                const alignedRow = colMap.map(colIdx => (colIdx !== -1 ? row[colIdx] : ''));
+                item.rows.push(alignedRow);
+            });
+        }
+    });
+
+    return order.map(name => {
+        const item = map.get(name);
+        return {
+            gameName: item.gameName,
+            data: item.head.concat(item.rows)
+        };
+    });
 }
 
 function processData() {
-    const games = rawGamesData.flatMap(splitGamesByOpponent);
+    const rawSplit = rawGamesData.flatMap(splitGamesByOpponent);
+    const games = mergeGamesByName(rawSplit);
     parsedGamesData = games.map(game => {
         const plays = [];
         let totalPlays = 0;
@@ -556,12 +650,7 @@ function processData() {
         };
     }).filter(g => g.unfilteredPlays > 0); // プレーが1つもない試合（空のシートなど）だけ除く。フィルターで0件になった試合は残す
 
-    // 同じ名前の試合（同じ相手と2回など）は「(2)」を付けて区別する
-    const seen = {};
-    parsedGamesData.forEach(g => {
-        seen[g.gameName] = (seen[g.gameName] || 0) + 1;
-        if (seen[g.gameName] > 1) g.gameName = `${g.gameName} (${seen[g.gameName]})`;
-    });
+    // 同じ相手名・試合名のデータは mergeGamesByName で1つに自動統合されます
 }
 
 // フィルターに当てはまるプレーが1つもないときの表示切り替え

@@ -89,6 +89,7 @@
             pdfFileName: saved.pdfFileName || null,
             memberList: saved.memberList || base.memberList,
             cadence: saved.cadence || base.cadence,
+            playDiagrams: Array.isArray(saved.playDiagrams) ? saved.playDiagrams : (base.playDiagrams || []),
             updatedAt: saved.updatedAt || null
         };
     }
@@ -99,7 +100,8 @@
             opponent: partial.opponent !== undefined ? partial.opponent : current.opponent,
             pdfFileName: partial.pdfFileName !== undefined ? partial.pdfFileName : current.pdfFileName,
             memberList: partial.memberList !== undefined ? partial.memberList : current.memberList,
-            cadence: partial.cadence !== undefined ? partial.cadence : current.cadence
+            cadence: partial.cadence !== undefined ? partial.cadence : current.cadence,
+            playDiagrams: partial.playDiagrams !== undefined ? partial.playDiagrams : current.playDiagrams
         };
         if (window.TBShared && window.TBShared.saveExtra) {
             window.TBShared.saveExtra(next);
@@ -303,7 +305,104 @@
         return cardRows;
     }
 
-    async function importFromPdfFile(file) {
+    // ページをCanvasで高品質・軽量なJPEG画像データURLにレンダリングする（複数試合でも軽快に動くよう最適化）
+    async function renderPageToJpeg(page, targetWidth = 960) {
+        const unscaled = page.getViewport({ scale: 1 });
+        const scale = targetWidth / unscaled.width;
+        const viewport = page.getViewport({ scale });
+
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(viewport.width);
+        canvas.height = Math.round(viewport.height);
+        const ctx = canvas.getContext('2d');
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        return canvas.toDataURL('image/jpeg', 0.72);
+    }
+
+    // ページのトークンからPlay Diagramメタデータを抽出する
+    function extractPlayDiagramMeta(tokens) {
+        // 上部 (top <= 80) のトークンをX座標順に並べる
+        const topTokens = tokens
+            .filter(t => t.top <= 80)
+            .sort((a, b) => a.x - b.x);
+
+        const combinedTopText = topTokens.map(t => t.text).join(' ').replace(/\s+/g, ' ').trim();
+
+        // スラッシュを2つ以上含み、かつ #数字 または vs または GUN を含むかチェック
+        const slashCount = (combinedTopText.match(/\//g) || []).length;
+        if (slashCount < 2 || !/#\d+|vs|GUN|TRIP|TRIO|ACE|TWIN|FLEX|EMPTY|I\s*FORM/i.test(combinedTopText)) {
+            return null;
+        }
+
+        const parts = combinedTopText.split('/').map(s => s.trim()).filter(Boolean);
+        if (parts.length < 3) return null;
+
+        let gamePlay = parts[0] || '';
+        let downDist = parts[1] || '';
+        let formation = parts[2] || '';
+        let playName = parts.slice(3).join(' / ') || '';
+
+        if (parts.length === 3) {
+            formation = parts[1];
+            playName = parts[2];
+            downDist = '';
+        }
+
+        const playNumMatch = gamePlay.match(/#(\d+)/);
+        const playNum = playNumMatch ? parseInt(playNumMatch[1], 10) : 0;
+
+        // 試合名（例: KG 260614 vs Kandai）
+        const gameMatch = gamePlay.match(/^(.*?)(?:\s*#\d+.*)?$/);
+        const gameName = gameMatch ? gameMatch[1].trim() : gamePlay;
+
+        let down = '';
+        let distance = '';
+        const ddMatch = downDist.match(/^([1-4])\s*[-–/]\s*(\S+)/);
+        if (ddMatch) {
+            down = ddMatch[1];
+            distance = ddMatch[2];
+        }
+
+        // 図面内の注記テキスト（タイトル以外で、PPやOLやShift、赤文字注記など）
+        const noteTokens = tokens.filter(t => t.top > 80 && (
+            t.top > 430 ||
+            t.text.includes(':') ||
+            /PP|OL|RG|LG|RT|LT|C\s*:|Slide|Man|Step|Fake|Pull|Shift|Kill|Flash|Motion|Trap|Boot|Naked|Screen|Pass|Lead/i.test(t.text)
+        ));
+        noteTokens.sort((a, b) => (Math.abs(a.top - b.top) < 6 ? a.x - b.x : a.top - b.top));
+        const noteLines = [];
+        for (const nt of noteTokens) {
+            const last = noteLines[noteLines.length - 1];
+            if (last && Math.abs(last.top - nt.top) < 6) {
+                last.text += ' ' + nt.text;
+            } else {
+                noteLines.push({ top: nt.top, text: nt.text });
+            }
+        }
+        const cleanNotes = noteLines
+            .map(l => l.text.trim())
+            .filter(t => t.length >= 3 && !/^[A-Z]{1,2}$/.test(t) && !/^\d+$/.test(t))
+            .join(' / ');
+
+        return {
+            title: combinedTopText,
+            gameName,
+            gamePlay,
+            playNum,
+            downDist,
+            down,
+            distance,
+            formation,
+            playName,
+            notes: cleanNotes
+        };
+    }
+
+    async function importFromPdfFile(file, onProgress) {
         const buf = await file.arrayBuffer();
         const jpegs = extractJpegsFromPdfBuffer(buf.slice(0));
         const pdfjsLib = await loadPdfJs();
@@ -315,8 +414,12 @@
         }).promise;
 
         const result = {};
+        const playDiagrams = [];
 
         for (let p = 1; p <= pdf.numPages; p++) {
+            if (typeof onProgress === 'function') {
+                onProgress(p, pdf.numPages);
+            }
             const page = await pdf.getPage(p);
             const viewport = page.getViewport({ scale: 1 });
             const tc = await page.getTextContent();
@@ -399,6 +502,17 @@
                     };
                 }
             }
+
+            // 5. Play Diagram（プレー図面）ページ
+            const pdMeta = extractPlayDiagramMeta(tokens);
+            if (pdMeta) {
+                const image = await renderPageToJpeg(page, 1050);
+                playDiagrams.push({
+                    page: p,
+                    ...pdMeta,
+                    image
+                });
+            }
         }
 
         // Cadence用の埋め込み写真（横長で最も大きいJPEG）があればセット
@@ -409,11 +523,26 @@
             result.cadence.image = best.dataUrl;
         }
 
-        if (result.memberList || result.cadence) {
+        if (playDiagrams.length > 0) {
+            const existing = (getExtraData().playDiagrams || []);
+            // 複数試合のPDFをまとめてドロップしても蓄積されるようにマージ
+            const merged = existing.slice();
+            for (const pd of playDiagrams) {
+                const idx = merged.findIndex(m => m.title === pd.title);
+                if (idx !== -1) {
+                    merged[idx] = pd;
+                } else {
+                    merged.push(pd);
+                }
+            }
+            result.playDiagrams = merged;
+        }
+
+        if (result.memberList || result.cadence || (result.playDiagrams && result.playDiagrams.length)) {
             result.pdfFileName = file.name;
             return saveExtraData(result);
         }
-        throw new Error('PDF内に Member List または Cadence のページが見つかりませんでした。');
+        throw new Error('PDF内に Member List, Cadence, または Play Diagram のページが見つかりませんでした。');
     }
 
     // テキスト内の {blue:...} と {red:...} をHTMLに変換
