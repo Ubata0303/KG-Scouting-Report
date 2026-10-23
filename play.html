@@ -115,20 +115,15 @@ body {
     background: #f8fafc;
 }
 
-/* プレーカード一覧 */
+/* プレーカード一覧（バーチャルスクロール対応） */
 .play-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-    gap: 1rem;
-}
-@media (max-width: 640px) {
-    .play-grid {
-        grid-template-columns: 1fr;
-        gap: 0.85rem;
-    }
+    position: relative;
+    width: 100%;
+    min-height: 220px;
 }
 
 .play-card {
+    position: absolute;
     background: var(--card-bg);
     border-radius: 12px;
     border: 1px solid var(--border-color);
@@ -137,13 +132,13 @@ body {
     display: flex;
     flex-direction: column;
     cursor: pointer;
-    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    box-sizing: border-box;
 }
 .play-card:active {
     transform: scale(0.99);
 }
 .play-card-head {
-    padding: 9px 12px;
+    padding: 8px 12px;
     background: #f8fafc;
     border-bottom: 1px solid #e2e8f0;
     display: flex;
@@ -151,6 +146,7 @@ body {
     justify-content: space-between;
     gap: 6px;
     flex-wrap: wrap;
+    flex-shrink: 0;
 }
 .play-badge-group {
     display: flex;
@@ -204,27 +200,30 @@ body {
     display: flex;
     justify-content: center;
     align-items: center;
-    min-height: 180px;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
 }
 .play-card-img {
     width: 100%;
-    height: auto;
-    max-height: 260px;
+    height: 100%;
     object-fit: contain;
     border-radius: 4px;
     background: #fff;
 }
 .play-card-footer {
-    padding: 6px 12px;
+    padding: 4px 12px;
     background: #fafafa;
     border-top: 1px solid #f1f5f9;
     font-size: 0.75rem;
     color: var(--text-secondary);
-    min-height: 30px;
+    height: 28px;
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     gap: 6px;
-    flex-wrap: wrap;
+    overflow: hidden;
+    white-space: nowrap;
 }
 .notes-tag {
     background: #fff1f2;
@@ -505,13 +504,104 @@ body {
         renderGrid();
     }
 
-    const BATCH_SIZE = 24;
-    let renderedCount = 0;
-    let scrollObserver = null;
+    // ---------- バーチャルスクロール（Virtual Scroll）＆ 画像メモリ自動解放 ----------
+    // 画面に見えている数枚だけをDOMに配置し、画面外にスクロールしたカードは
+    // 即座にDOMから削除＆デコード済み画像メモリ(GPU/RAM)を破棄する。
+    const EMPTY_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    const mountedCards = new Map(); // index -> { el, img, objUrl, timer }
+    let vsCols = 1;
+    let vsColWidth = 320;
+    let vsCardHeight = 300;
+    let vsRowHeight = 316;
+    let vsGap = 16;
+    let vsRafId = null;
+    let modalObjUrl = null;
 
-    function createPlayCard(d, idx) {
+    // Base64データURLをバイナリBlobに変換し、巨大なBase64文字列をメモリから即解放
+    function getDiagramBlob(d) {
+        if (!d) return null;
+        if (d._blob) return d._blob;
+        if (!d.image) return null;
+        try {
+            const parts = d.image.split(',');
+            const b64 = parts.length > 1 ? parts[1] : parts[0];
+            const bin = atob(b64);
+            const len = bin.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+            d._blob = new Blob([bytes], { type: 'image/jpeg' });
+            // 部員用(Viewer)では書き出し不要なため、UTF-16の巨大なBase64文字列をヒープから即破棄
+            d.image = null;
+            return d._blob;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function computeLayoutMetrics() {
+        const w = playGrid.clientWidth || Math.min(window.innerWidth - 32, 1100);
+        if (window.innerWidth <= 640) {
+            vsCols = 1;
+            vsGap = 14;
+            vsCardHeight = 290;
+            vsRowHeight = vsCardHeight + vsGap;
+            vsColWidth = w;
+        } else {
+            vsGap = 18;
+            vsCols = Math.max(1, Math.floor((w + vsGap) / (320 + vsGap)));
+            vsCardHeight = 305;
+            vsRowHeight = vsCardHeight + vsGap;
+            vsColWidth = Math.floor((w - vsGap * (vsCols - 1)) / vsCols);
+        }
+    }
+
+    function unmountCard(idx) {
+        const entry = mountedCards.get(idx);
+        if (!entry) return;
+        if (entry.timer) {
+            clearTimeout(entry.timer);
+            entry.timer = null;
+        }
+        if (entry.img) {
+            entry.img.onload = null;
+            entry.img.onerror = null;
+            // WebKit/Safariのデコード済み画像キャッシュ(VRAM/RAM)を即座に解放
+            entry.img.src = EMPTY_GIF;
+            entry.img.remove();
+            entry.img = null;
+        }
+        if (entry.objUrl) {
+            try { URL.revokeObjectURL(entry.objUrl); } catch (_) {}
+            entry.objUrl = null;
+        }
+        if (entry.el && entry.el.parentNode) {
+            entry.el.remove();
+        }
+        mountedCards.delete(idx);
+    }
+
+    function clearAllMountedCards() {
+        for (const idx of Array.from(mountedCards.keys())) {
+            unmountCard(idx);
+        }
+    }
+
+    function mountCard(idx) {
+        if (mountedCards.has(idx)) return;
+        const d = filteredDiagrams[idx];
+        if (!d) return;
+
+        const row = Math.floor(idx / vsCols);
+        const col = idx % vsCols;
+        const top = row * vsRowHeight;
+        const left = col * (vsColWidth + vsGap);
+
         const card = document.createElement('div');
         card.className = 'play-card';
+        card.style.top = top + 'px';
+        card.style.left = left + 'px';
+        card.style.width = vsColWidth + 'px';
+        card.style.height = vsCardHeight + 'px';
 
         const gameBadge = d.gameName ? `<span class="badge-game">${esc(d.gameName)}</span>` : '';
         const numText = d.playNum ? `#${d.playNum}` : (d.page ? `P.${d.page}` : '');
@@ -534,70 +624,90 @@ body {
             ${notesText ? `<div class="play-card-footer">${notesText}</div>` : ''}
         `;
 
-        const img = document.createElement('img');
-        img.className = 'play-card-img';
-        img.alt = playText;
-        img.loading = 'lazy';
-        img.decoding = 'async';
-        img.src = d.image;
-        card.querySelector('.play-card-body').appendChild(img);
-
         card.addEventListener('click', () => openModal(idx));
-        return card;
-    }
+        playGrid.appendChild(card);
 
-    function renderNextBatch() {
-        const oldSentinel = document.getElementById('play-grid-sentinel');
-        if (oldSentinel) oldSentinel.remove();
-        if (scrollObserver) {
-            scrollObserver.disconnect();
-            scrollObserver = null;
-        }
+        const entry = { el: card, img: null, objUrl: null, timer: null };
+        mountedCards.set(idx, entry);
 
-        const nextEnd = Math.min(renderedCount + BATCH_SIZE, filteredDiagrams.length);
-        const frag = document.createDocumentFragment();
-        for (let i = renderedCount; i < nextEnd; i++) {
-            frag.appendChild(createPlayCard(filteredDiagrams[i], i));
-        }
-        renderedCount = nextEnd;
+        // 高速スクロール中に通過するだけの画像をデコードしないよう、微小ディレイ後に見えているカードだけ画像生成
+        entry.timer = setTimeout(() => {
+            entry.timer = null;
+            if (!mountedCards.has(idx)) return;
+            const bodyEl = card.querySelector('.play-card-body');
+            if (!bodyEl) return;
 
-        if (renderedCount < filteredDiagrams.length) {
-            const sentinel = document.createElement('div');
-            sentinel.id = 'play-grid-sentinel';
-            sentinel.style.cssText = 'grid-column: 1 / -1; text-align: center; padding: 1.2rem;';
-            const moreBtn = document.createElement('button');
-            moreBtn.type = 'button';
-            moreBtn.className = 'reset-btn';
-            moreBtn.style.cssText = 'padding: 10px 20px; font-size: 0.9rem; background: #fff;';
-            moreBtn.textContent = `さらに表示する（残り ${filteredDiagrams.length - renderedCount} プレー）`;
-            moreBtn.onclick = renderNextBatch;
-            sentinel.appendChild(moreBtn);
-            frag.appendChild(sentinel);
+            const img = document.createElement('img');
+            img.className = 'play-card-img';
+            img.alt = playText;
+            img.decoding = 'async';
 
-            playGrid.appendChild(frag);
-
-            if ('IntersectionObserver' in window) {
-                scrollObserver = new IntersectionObserver(entries => {
-                    if (entries.some(e => e.isIntersecting)) {
-                        renderNextBatch();
-                    }
-                }, { rootMargin: '800px' });
-                scrollObserver.observe(sentinel);
+            const blob = getDiagramBlob(d);
+            if (blob) {
+                const objUrl = URL.createObjectURL(blob);
+                entry.objUrl = objUrl;
+                img.src = objUrl;
+            } else if (d.image) {
+                img.src = d.image;
             }
-        } else {
-            playGrid.appendChild(frag);
+            entry.img = img;
+            bodyEl.appendChild(img);
+        }, 25);
+    }
+
+    function updateVirtualScroll() {
+        vsRafId = null;
+        if (filteredDiagrams.length === 0) return;
+
+        const totalRows = Math.ceil(filteredDiagrams.length / vsCols);
+        const rect = playGrid.getBoundingClientRect();
+        const viewH = window.innerHeight || document.documentElement.clientHeight;
+
+        // グリッド内での現在の表示Y範囲を計算（上下1行分だけバッファを持たせる）
+        const visibleTop = Math.max(0, -rect.top);
+        const visibleBottom = Math.max(0, viewH - rect.top);
+
+        const startRow = Math.max(0, Math.floor(visibleTop / vsRowHeight) - 1);
+        const endRow = Math.min(totalRows - 1, Math.ceil(visibleBottom / vsRowHeight) + 1);
+
+        const startIndex = startRow * vsCols;
+        const endIndex = Math.min(filteredDiagrams.length, (endRow + 1) * vsCols);
+
+        // 1. 画面外に出たカードをDOMとメモリから即座に削除
+        for (const idx of Array.from(mountedCards.keys())) {
+            if (idx < startIndex || idx >= endIndex) {
+                unmountCard(idx);
+            }
+        }
+
+        // 2. 画面内に入ったカードだけをレンダリング
+        for (let idx = startIndex; idx < endIndex; idx++) {
+            mountCard(idx);
         }
     }
+
+    function scheduleVirtualUpdate() {
+        if (vsRafId !== null) return;
+        vsRafId = requestAnimationFrame(updateVirtualScroll);
+    }
+
+    window.addEventListener('scroll', scheduleVirtualUpdate, { passive: true });
+    window.addEventListener('resize', () => {
+        if (filteredDiagrams.length === 0) return;
+        computeLayoutMetrics();
+        const totalRows = Math.ceil(filteredDiagrams.length / vsCols);
+        playGrid.style.height = Math.max(220, totalRows * vsRowHeight - vsGap) + 'px';
+        clearAllMountedCards();
+        updateVirtualScroll();
+    });
 
     function renderGrid() {
         countBadge.innerHTML = `表示中: <b>${filteredDiagrams.length}</b> / ${allDiagrams.length} プレー`;
 
-        if (scrollObserver) {
-            scrollObserver.disconnect();
-            scrollObserver = null;
-        }
+        clearAllMountedCards();
 
         if (filteredDiagrams.length === 0) {
+            playGrid.style.height = 'auto';
             playGrid.innerHTML = `
                 <div class="empty-msg">
                     <h3>該当するプレー図面がありません</h3>
@@ -608,12 +718,21 @@ body {
         }
 
         playGrid.innerHTML = '';
-        renderedCount = 0;
-        renderNextBatch();
+        computeLayoutMetrics();
+        const totalRows = Math.ceil(filteredDiagrams.length / vsCols);
+        playGrid.style.height = Math.max(220, totalRows * vsRowHeight - vsGap) + 'px';
+        updateVirtualScroll();
     }
 
     function esc(s) {
         return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function revokeModalUrl() {
+        if (modalObjUrl) {
+            try { URL.revokeObjectURL(modalObjUrl); } catch (_) {}
+            modalObjUrl = null;
+        }
     }
 
     function openModal(index) {
@@ -627,13 +746,23 @@ body {
     function closeModal() {
         modalOverlay.classList.remove('active');
         document.body.style.overflow = '';
+        modalImg.src = EMPTY_GIF;
+        revokeModalUrl();
     }
 
     function updateModalContent() {
         const d = filteredDiagrams[currentModalIndex];
         if (!d) return;
 
-        modalImg.src = d.image;
+        revokeModalUrl();
+        const blob = getDiagramBlob(d);
+        if (blob) {
+            modalObjUrl = URL.createObjectURL(blob);
+            modalImg.src = modalObjUrl;
+        } else {
+            modalImg.src = d.image || '';
+        }
+
         const numText = d.playNum ? `#${d.playNum}` : `P.${d.page}`;
         modalPlayInfo.innerHTML = `
             ${d.gameName ? `<span style="color:#6ee7b7;font-size:0.8rem;">[${esc(d.gameName)}]</span>` : ''}
