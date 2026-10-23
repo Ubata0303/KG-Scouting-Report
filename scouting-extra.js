@@ -341,10 +341,77 @@
         return cardRows;
     }
 
-    // ページをCanvasで高品質・軽量なJPEG画像データURLにレンダリングする（6試合分でも4〜5MBに収まるよう最適化）
+    // 図面周囲の余分な白余白を自動トリミングし、すべてのPDF図面の枠サイズを統一する
+    function normalizeDiagramCanvas(srcCanvas, targetWidth = 680) {
+        const sw = srcCanvas.width;
+        const sh = srcCanvas.height;
+        if (!sw || !sh) return srcCanvas;
+
+        const ctx = srcCanvas.getContext('2d');
+        const imgData = ctx.getImageData(0, 0, sw, sh).data;
+        let minX = sw, maxX = 0, minY = sh, maxY = 0;
+
+        for (let y = 0; y < sh; y++) {
+            let dark = 0;
+            const rowOff = y * sw * 4;
+            for (let x = 0; x < sw; x += 2) {
+                const i = rowOff + x * 4;
+                if (imgData[i] < 215 || imgData[i + 1] < 215 || imgData[i + 2] < 215) {
+                    dark++;
+                    if (dark >= 3) break;
+                }
+            }
+            if (dark >= 3) {
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+        }
+
+        for (let x = 0; x < sw; x++) {
+            let dark = 0;
+            for (let y = minY; y <= maxY; y += 2) {
+                const i = (y * sw + x) * 4;
+                if (imgData[i] < 215 || imgData[i + 1] < 215 || imgData[i + 2] < 215) {
+                    dark++;
+                    if (dark >= 3) break;
+                }
+            }
+            if (dark >= 3) {
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+            }
+        }
+
+        const bw = maxX - minX;
+        const bh = maxY - minY;
+        if (bw < sw * 0.2 || bh < sh * 0.2) {
+            return srcCanvas;
+        }
+
+        // 下のPDF（標準サイズ）と同じ余白バランス（左右3.6%、上下2.8%）で統一
+        const padX = Math.round(bw * 0.036);
+        const padY = Math.round(bh * 0.028);
+        const cropX = Math.max(0, minX - padX);
+        const cropY = Math.max(0, minY - padY);
+        const cropW = Math.min(sw - cropX, bw + padX * 2);
+        const cropH = Math.min(sh - cropY, bh + padY * 2);
+
+        const out = document.createElement('canvas');
+        out.width = targetWidth;
+        out.height = Math.round(targetWidth * (cropH / cropW));
+        const octx = out.getContext('2d');
+        octx.fillStyle = '#ffffff';
+        octx.fillRect(0, 0, out.width, out.height);
+        octx.drawImage(srcCanvas, cropX, cropY, cropW, cropH, 0, 0, out.width, out.height);
+        return out;
+    }
+
+    // ページをCanvasで高品質・軽量なJPEG画像データURLにレンダリングする（余白自動トリミング＆サイズ統一付き）
     async function renderPageToJpeg(page, targetWidth = 680) {
         const unscaled = page.getViewport({ scale: 1 });
-        const scale = targetWidth / unscaled.width;
+        // 余白が大きいPDFでもトリミング後にくっきり見えるよう少し高めの解像度で描画してから正規化
+        const renderWidth = Math.max(targetWidth, 960);
+        const scale = renderWidth / unscaled.width;
         const viewport = page.getViewport({ scale });
 
         const canvas = document.createElement('canvas');
@@ -356,10 +423,11 @@
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         await page.render({ canvasContext: ctx, viewport }).promise;
-        return canvas.toDataURL('image/jpeg', 0.48);
+        const normalized = normalizeDiagramCanvas(canvas, targetWidth);
+        return normalized.toDataURL('image/jpeg', 0.48);
     }
 
-    // 既に取り込み済みの図面データが大きい場合、書き出し時に自動で軽量化する
+    // 既に取り込み済みの図面データの余白統一・軽量化を書き出し時に自動実行する
     async function compressExistingDiagrams(onProgress) {
         const current = getExtraData();
         const list = current.playDiagrams;
@@ -369,28 +437,27 @@
         const nextList = [];
         for (let i = 0; i < list.length; i++) {
             const item = list[i];
-            if (item && item.image && item.image.length > 26000) {
+            if (item && item.image && (!item.cropNormalized || item.image.length > 26000)) {
                 if (typeof onProgress === 'function') onProgress(i + 1, list.length);
                 try {
                     const compressed = await new Promise((resolve) => {
                         const img = new Image();
                         img.onload = () => {
-                            const targetW = Math.min(680, img.width || 680);
-                            const scale = targetW / (img.width || 680);
                             const canvas = document.createElement('canvas');
-                            canvas.width = Math.round((img.width || 680) * scale);
-                            canvas.height = Math.round((img.height || 480) * scale);
+                            canvas.width = img.naturalWidth || img.width || 680;
+                            canvas.height = img.naturalHeight || img.height || 480;
                             const ctx = canvas.getContext('2d');
                             ctx.fillStyle = '#ffffff';
                             ctx.fillRect(0, 0, canvas.width, canvas.height);
                             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                            resolve(canvas.toDataURL('image/jpeg', 0.48));
+                            const normalized = normalizeDiagramCanvas(canvas, 680);
+                            resolve(normalized.toDataURL('image/jpeg', 0.48));
                         };
                         img.onerror = () => resolve(item.image);
                         img.src = item.image;
                     });
-                    if (compressed && compressed.length < item.image.length) {
-                        nextList.push(Object.assign({}, item, { image: compressed }));
+                    if (compressed) {
+                        nextList.push(Object.assign({}, item, { image: compressed, cropNormalized: true }));
                         changed = true;
                         continue;
                     }
@@ -602,7 +669,8 @@
                     page: p,
                     sourcePdf: file.name,
                     ...pdMeta,
-                    image
+                    image,
+                    cropNormalized: true
                 });
             }
         }

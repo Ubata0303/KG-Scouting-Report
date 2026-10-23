@@ -504,16 +504,19 @@ body {
         renderGrid();
     }
 
-    // ---------- バーチャルスクロール（Virtual Scroll）＆ 画像メモリ自動解放 ----------
+    // ---------- バーチャルスクロール（Virtual Scroll）＆ 画像メモリ自動解放 ＆ 図面サイズ統一 ----------
     // 画面に見えている数枚だけをDOMに配置し、画面外にスクロールしたカードは
     // 即座にDOMから削除＆デコード済み画像メモリ(GPU/RAM)を破棄する。
+    // また、余白が大きいPDF図面（#43など）も自動的に余白をトリミングして下のPDF（#44）と同じ大きさに揃える。
     const EMPTY_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
     const mountedCards = new Map(); // index -> { el, img, objUrl, timer }
     let vsCols = 1;
     let vsColWidth = 320;
-    let vsCardHeight = 300;
-    let vsRowHeight = 316;
+    let vsBodyHeight = 250;
     let vsGap = 16;
+    let rowHeights = [];
+    let rowTops = [];
+    let totalGridHeight = 220;
     let vsRafId = null;
     let modalObjUrl = null;
 
@@ -538,21 +541,140 @@ body {
         }
     }
 
+    // 余白が大きくて小さく見えるPDF図面を検出し、下のPDF（標準サイズ）と同じ余白比率に自動トリミングする
+    function normalizeDiagramImageIfNeeded(img, d, onUpdatedUrl) {
+        if (!d || d._cropChecked || d.cropNormalized) return;
+        d._cropChecked = true;
+        const sw = img.naturalWidth || img.width;
+        const sh = img.naturalHeight || img.height;
+        if (!sw || !sh) return;
+
+        try {
+            const tmp = document.createElement('canvas');
+            tmp.width = sw;
+            tmp.height = sh;
+            const tctx = tmp.getContext('2d', { willReadFrequently: true });
+            tctx.fillStyle = '#ffffff';
+            tctx.fillRect(0, 0, sw, sh);
+            tctx.drawImage(img, 0, 0, sw, sh);
+
+            const imgData = tctx.getImageData(0, 0, sw, sh).data;
+            let minX = sw, maxX = 0, minY = sh, maxY = 0;
+
+            for (let y = 0; y < sh; y++) {
+                let dark = 0;
+                const rowOff = y * sw * 4;
+                for (let x = 0; x < sw; x += 2) {
+                    const i = rowOff + x * 4;
+                    if (imgData[i] < 215 || imgData[i + 1] < 215 || imgData[i + 2] < 215) {
+                        dark++;
+                        if (dark >= 3) break;
+                    }
+                }
+                if (dark >= 3) {
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+
+            for (let x = 0; x < sw; x++) {
+                let dark = 0;
+                for (let y = minY; y <= maxY; y += 2) {
+                    const i = (y * sw + x) * 4;
+                    if (imgData[i] < 215 || imgData[i + 1] < 215 || imgData[i + 2] < 215) {
+                        dark++;
+                        if (dark >= 3) break;
+                    }
+                }
+                if (dark >= 3) {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                }
+            }
+
+            const bw = maxX - minX;
+            const bh = maxY - minY;
+            if (bw < sw * 0.2 || bh < sh * 0.2) return;
+
+            // 既に横幅90%以上使っている標準サイズの図面ならそのまま
+            if (bw >= sw * 0.89 && bh >= sh * 0.86) return;
+
+            const padX = Math.round(bw * 0.036);
+            const padY = Math.round(bh * 0.028);
+            const cropX = Math.max(0, minX - padX);
+            const cropY = Math.max(0, minY - padY);
+            const cropW = Math.min(sw - cropX, bw + padX * 2);
+            const cropH = Math.min(sh - cropY, bh + padY * 2);
+
+            const out = document.createElement('canvas');
+            out.width = 680;
+            out.height = Math.round(680 * (cropH / cropW));
+            const octx = out.getContext('2d');
+            octx.fillStyle = '#ffffff';
+            octx.fillRect(0, 0, out.width, out.height);
+            octx.drawImage(tmp, cropX, cropY, cropW, cropH, 0, 0, out.width, out.height);
+
+            out.toBlob(blob => {
+                if (!blob) return;
+                d._blob = blob;
+                if (typeof onUpdatedUrl === 'function') {
+                    onUpdatedUrl(blob);
+                }
+            }, 'image/jpeg', 0.52);
+        } catch (_) {}
+    }
+
+    function estimateCardHeight(d) {
+        const badgeChars = (d.gameName || '').length + String(d.playNum || d.page || '').length + (d.downDist || '').length + (d.formation || '').length + 10;
+        const titleChars = (d.playName || 'PLAY').length;
+        const totalLinePx = badgeChars * 7.5 + titleChars * 9.5 + 36;
+        const availW = Math.max(200, vsColWidth - 24);
+        const lines = Math.max(1, Math.ceil(totalLinePx / availW));
+        const headH = 18 + lines * 25;
+        const footH = d.notes ? 28 : 0;
+        return headH + vsBodyHeight + footH + 2;
+    }
+
+    function recomputeRowTops() {
+        const totalRows = rowHeights.length;
+        rowTops = new Array(totalRows);
+        let y = 0;
+        for (let r = 0; r < totalRows; r++) {
+            rowTops[r] = y;
+            y += rowHeights[r] + vsGap;
+        }
+        totalGridHeight = Math.max(220, y - (totalRows > 0 ? vsGap : 0));
+        playGrid.style.height = totalGridHeight + 'px';
+    }
+
     function computeLayoutMetrics() {
         const w = playGrid.clientWidth || Math.min(window.innerWidth - 32, 1100);
         if (window.innerWidth <= 640) {
             vsCols = 1;
             vsGap = 14;
-            vsCardHeight = 290;
-            vsRowHeight = vsCardHeight + vsGap;
             vsColWidth = w;
         } else {
             vsGap = 18;
             vsCols = Math.max(1, Math.floor((w + vsGap) / (320 + vsGap)));
-            vsCardHeight = 305;
-            vsRowHeight = vsCardHeight + vsGap;
             vsColWidth = Math.floor((w - vsGap * (vsCols - 1)) / vsCols);
         }
+        // すべてのカードで図面表示エリア（.play-card-body）の高さを下のPDF（#44）と同じ比率で完全固定
+        vsBodyHeight = Math.round((vsColWidth - 16) * 0.76) + 12;
+
+        const totalRows = Math.ceil(filteredDiagrams.length / vsCols);
+        rowHeights = new Array(totalRows);
+        for (let r = 0; r < totalRows; r++) {
+            let maxH = 0;
+            for (let c = 0; c < vsCols; c++) {
+                const idx = r * vsCols + c;
+                if (idx < filteredDiagrams.length) {
+                    const h = estimateCardHeight(filteredDiagrams[idx]);
+                    if (h > maxH) maxH = h;
+                }
+            }
+            rowHeights[r] = maxH || (vsBodyHeight + 60);
+        }
+        recomputeRowTops();
     }
 
     function unmountCard(idx) {
@@ -593,7 +715,7 @@ body {
 
         const row = Math.floor(idx / vsCols);
         const col = idx % vsCols;
-        const top = row * vsRowHeight;
+        const top = rowTops[row] || 0;
         const left = col * (vsColWidth + vsGap);
 
         const card = document.createElement('div');
@@ -601,7 +723,6 @@ body {
         card.style.top = top + 'px';
         card.style.left = left + 'px';
         card.style.width = vsColWidth + 'px';
-        card.style.height = vsCardHeight + 'px';
 
         const gameBadge = d.gameName ? `<span class="badge-game">${esc(d.gameName)}</span>` : '';
         const numText = d.playNum ? `#${d.playNum}` : (d.page ? `P.${d.page}` : '');
@@ -620,14 +741,14 @@ body {
                 </div>
                 <div class="play-title-main">${esc(playText)}</div>
             </div>
-            <div class="play-card-body"></div>
+            <div class="play-card-body" style="height:${vsBodyHeight}px;flex:0 0 ${vsBodyHeight}px;"></div>
             ${notesText ? `<div class="play-card-footer">${notesText}</div>` : ''}
         `;
 
         card.addEventListener('click', () => openModal(idx));
         playGrid.appendChild(card);
 
-        const entry = { el: card, img: null, objUrl: null, timer: null };
+        const entry = { el: card, img: null, objUrl: null, timer: null, row };
         mountedCards.set(idx, entry);
 
         // 高速スクロール中に通過するだけの画像をデコードしないよう、微小ディレイ後に見えているカードだけ画像生成
@@ -642,6 +763,20 @@ body {
             img.alt = playText;
             img.decoding = 'async';
 
+            img.onload = () => {
+                if (!mountedCards.has(idx)) return;
+                normalizeDiagramImageIfNeeded(img, d, newBlob => {
+                    if (!mountedCards.has(idx) || !entry.img) return;
+                    if (entry.objUrl) {
+                        try { URL.revokeObjectURL(entry.objUrl); } catch (_) {}
+                    }
+                    const newUrl = URL.createObjectURL(newBlob);
+                    entry.objUrl = newUrl;
+                    entry.img.onload = null;
+                    entry.img.src = newUrl;
+                });
+            };
+
             const blob = getDiagramBlob(d);
             if (blob) {
                 const objUrl = URL.createObjectURL(blob);
@@ -655,11 +790,36 @@ body {
         }, 25);
     }
 
+    function syncMountedRowHeights() {
+        let changed = false;
+        const rowMax = new Map();
+        for (const [, entry] of mountedCards.entries()) {
+            const h = entry.el.offsetHeight;
+            if (h > 0) {
+                const prev = rowMax.get(entry.row) || 0;
+                if (h > prev) rowMax.set(entry.row, h);
+            }
+        }
+        for (const [r, h] of rowMax.entries()) {
+            if (Math.abs((rowHeights[r] || 0) - h) > 1) {
+                rowHeights[r] = h;
+                changed = true;
+            }
+        }
+        if (changed) {
+            recomputeRowTops();
+            for (const [, entry] of mountedCards.entries()) {
+                entry.el.style.top = (rowTops[entry.row] || 0) + 'px';
+            }
+        }
+    }
+
     function updateVirtualScroll() {
         vsRafId = null;
         if (filteredDiagrams.length === 0) return;
 
-        const totalRows = Math.ceil(filteredDiagrams.length / vsCols);
+        const totalRows = rowHeights.length;
+        if (totalRows === 0) return;
         const rect = playGrid.getBoundingClientRect();
         const viewH = window.innerHeight || document.documentElement.clientHeight;
 
@@ -667,8 +827,17 @@ body {
         const visibleTop = Math.max(0, -rect.top);
         const visibleBottom = Math.max(0, viewH - rect.top);
 
-        const startRow = Math.max(0, Math.floor(visibleTop / vsRowHeight) - 1);
-        const endRow = Math.min(totalRows - 1, Math.ceil(visibleBottom / vsRowHeight) + 1);
+        let startRow = 0;
+        while (startRow < totalRows - 1 && (rowTops[startRow] + rowHeights[startRow]) < visibleTop) {
+            startRow++;
+        }
+        startRow = Math.max(0, startRow - 1);
+
+        let endRow = startRow;
+        while (endRow < totalRows - 1 && rowTops[endRow] < visibleBottom) {
+            endRow++;
+        }
+        endRow = Math.min(totalRows - 1, endRow + 1);
 
         const startIndex = startRow * vsCols;
         const endIndex = Math.min(filteredDiagrams.length, (endRow + 1) * vsCols);
@@ -681,8 +850,15 @@ body {
         }
 
         // 2. 画面内に入ったカードだけをレンダリング
+        let newlyMounted = false;
         for (let idx = startIndex; idx < endIndex; idx++) {
-            mountCard(idx);
+            if (!mountedCards.has(idx)) {
+                mountCard(idx);
+                newlyMounted = true;
+            }
+        }
+        if (newlyMounted) {
+            syncMountedRowHeights();
         }
     }
 
@@ -694,10 +870,8 @@ body {
     window.addEventListener('scroll', scheduleVirtualUpdate, { passive: true });
     window.addEventListener('resize', () => {
         if (filteredDiagrams.length === 0) return;
-        computeLayoutMetrics();
-        const totalRows = Math.ceil(filteredDiagrams.length / vsCols);
-        playGrid.style.height = Math.max(220, totalRows * vsRowHeight - vsGap) + 'px';
         clearAllMountedCards();
+        computeLayoutMetrics();
         updateVirtualScroll();
     });
 
@@ -719,8 +893,6 @@ body {
 
         playGrid.innerHTML = '';
         computeLayoutMetrics();
-        const totalRows = Math.ceil(filteredDiagrams.length / vsCols);
-        playGrid.style.height = Math.max(220, totalRows * vsRowHeight - vsGap) + 'px';
         updateVirtualScroll();
     }
 
