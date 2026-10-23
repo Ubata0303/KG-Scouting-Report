@@ -294,7 +294,7 @@ function showDashboard() {
 
 // 母体：閲覧アプリ用のデータファイル（data.json）を書き出す
 async function exportAppData() {
-    const extraObj = (window.TBScoutingExtra && window.TBScoutingExtra.getExtraData ? window.TBScoutingExtra.getExtraData() : null)
+    let extraObj = (window.TBScoutingExtra && window.TBScoutingExtra.getExtraData ? window.TBScoutingExtra.getExtraData() : null)
         || (window.TBShared && window.TBShared.loadExtra ? window.TBShared.loadExtra() : null);
     const hasExtra = !!(extraObj && (extraObj.pdfFileName || (extraObj.playDiagrams && extraObj.playDiagrams.length > 0) || extraObj.memberList));
     if (rawGamesData.length === 0 && !hasExtra) return;
@@ -304,6 +304,13 @@ async function exportAppData() {
     }
     const password = await window.TBSecure.askNewPassword();
     if (!password) return;
+    const prevStatus = uploadStatus ? uploadStatus.textContent : '';
+    if (window.TBScoutingExtra && window.TBScoutingExtra.compressExistingDiagrams) {
+        extraObj = await window.TBScoutingExtra.compressExistingDiagrams((cur, total) => {
+            if (uploadStatus) uploadStatus.textContent = `スマホ高速表示用に図面を軽量化中... (${cur}/${total})`;
+        });
+    }
+    if (uploadStatus) uploadStatus.textContent = 'データを暗号化して書き出し中...';
     const payload = {
         version: 1,
         exportedAt: new Date().toISOString(),
@@ -327,6 +334,7 @@ async function exportAppData() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+    if (uploadStatus) uploadStatus.textContent = prevStatus || 'data.json を書き出しました！';
 }
 
 // 閲覧アプリ：公開されている data.json を読み込んで表示する

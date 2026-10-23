@@ -341,8 +341,8 @@
         return cardRows;
     }
 
-    // ページをCanvasで高品質・軽量なJPEG画像データURLにレンダリングする（複数試合でも軽快に動くよう最適化）
-    async function renderPageToJpeg(page, targetWidth = 860) {
+    // ページをCanvasで高品質・軽量なJPEG画像データURLにレンダリングする（6試合分でも4〜5MBに収まるよう最適化）
+    async function renderPageToJpeg(page, targetWidth = 680) {
         const unscaled = page.getViewport({ scale: 1 });
         const scale = targetWidth / unscaled.width;
         const viewport = page.getViewport({ scale });
@@ -356,7 +356,52 @@
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         await page.render({ canvasContext: ctx, viewport }).promise;
-        return canvas.toDataURL('image/jpeg', 0.62);
+        return canvas.toDataURL('image/jpeg', 0.48);
+    }
+
+    // 既に取り込み済みの図面データが大きい場合、書き出し時に自動で軽量化する
+    async function compressExistingDiagrams(onProgress) {
+        const current = getExtraData();
+        const list = current.playDiagrams;
+        if (!Array.isArray(list) || list.length === 0) return current;
+
+        let changed = false;
+        const nextList = [];
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i];
+            if (item && item.image && item.image.length > 26000) {
+                if (typeof onProgress === 'function') onProgress(i + 1, list.length);
+                try {
+                    const compressed = await new Promise((resolve) => {
+                        const img = new Image();
+                        img.onload = () => {
+                            const targetW = Math.min(680, img.width || 680);
+                            const scale = targetW / (img.width || 680);
+                            const canvas = document.createElement('canvas');
+                            canvas.width = Math.round((img.width || 680) * scale);
+                            canvas.height = Math.round((img.height || 480) * scale);
+                            const ctx = canvas.getContext('2d');
+                            ctx.fillStyle = '#ffffff';
+                            ctx.fillRect(0, 0, canvas.width, canvas.height);
+                            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                            resolve(canvas.toDataURL('image/jpeg', 0.48));
+                        };
+                        img.onerror = () => resolve(item.image);
+                        img.src = item.image;
+                    });
+                    if (compressed && compressed.length < item.image.length) {
+                        nextList.push(Object.assign({}, item, { image: compressed }));
+                        changed = true;
+                        continue;
+                    }
+                } catch (_) {}
+            }
+            nextList.push(item);
+        }
+        if (changed) {
+            return saveExtraData({ playDiagrams: nextList });
+        }
+        return current;
     }
 
     // ページのトークンからPlay Diagramメタデータを抽出する
@@ -552,7 +597,7 @@
             // 5. Play Diagram（プレー図面）ページ
             const pdMeta = extractPlayDiagramMeta(tokens);
             if (pdMeta) {
-                const image = await renderPageToJpeg(page, 860);
+                const image = await renderPageToJpeg(page, 680);
                 playDiagrams.push({
                     page: p,
                     sourcePdf: file.name,
@@ -625,6 +670,7 @@
         saveExtraData,
         resetExtraData,
         importFromPdfFile,
+        compressExistingDiagrams,
         formatRichText
     };
 })();

@@ -89,7 +89,7 @@
         return new Promise(resolve => {
             const ov = el('div', OVERLAY_CSS + 'background:#f1f5f9;');
             const box = el('div', BOX_CSS);
-            box.appendChild(el('h3', 'margin:0 0 6px;font-size:1.2rem;', 'Scouting Report'));
+            box.appendChild(el('h3', 'margin:0 0 6px;font-size:1.2rem;', 'Tendency Breaker'));
             box.appendChild(el('p', 'margin:0 0 14px;font-size:0.9rem;color:#475569;', 'パスワードを入力してください。'));
             const form = el('form', '');
             const p = el('input', INPUT_CSS); p.type = 'password'; p.placeholder = 'パスワード'; p.autocomplete = 'current-password';
@@ -117,7 +117,51 @@
         });
     }
 
-    // ---------- 閲覧アプリ：data.json の取得 ----------
+    // ---------- 閲覧アプリ：data.json の取得（高速キャッシュ対応） ----------
+    const CACHE_DB = 'tb-viewer-cache-db';
+    const CACHE_STORE = 'cache';
+
+    function openCacheDb() {
+        return new Promise((resolve, reject) => {
+            if (typeof indexedDB === 'undefined') return reject(new Error('no idb'));
+            try {
+                const req = indexedDB.open(CACHE_DB, 1);
+                req.onupgradeneeded = () => {
+                    const db = req.result;
+                    if (!db.objectStoreNames.contains(CACHE_STORE)) db.createObjectStore(CACHE_STORE);
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            } catch (e) { reject(e); }
+        });
+    }
+    function cacheGet(key) {
+        return openCacheDb().then(db => new Promise((resolve) => {
+            const tx = db.transaction(CACHE_STORE, 'readonly');
+            const req = tx.objectStore(CACHE_STORE).get(key);
+            req.onsuccess = () => resolve(req.result || null);
+            req.onerror = () => resolve(null);
+        })).catch(() => null);
+    }
+    function cacheSet(entries) {
+        return openCacheDb().then(db => new Promise((resolve) => {
+            const tx = db.transaction(CACHE_STORE, 'readwrite');
+            const st = tx.objectStore(CACHE_STORE);
+            for (const [k, v] of Object.entries(entries)) {
+                if (v === null || v === undefined) st.delete(k);
+                else st.put(v, k);
+            }
+            tx.oncomplete = () => resolve(true);
+            tx.onerror = () => resolve(false);
+        })).catch(() => false);
+    }
+    function cacheClear() {
+        return openCacheDb().then(db => {
+            const tx = db.transaction(CACHE_STORE, 'readwrite');
+            tx.objectStore(CACHE_STORE).clear();
+        }).catch(() => {});
+    }
+
     function getSaved() {
         try { return sessionStorage.getItem(PASS_KEY) || localStorage.getItem(PASS_KEY); } catch (e) { return null; }
     }
@@ -129,18 +173,55 @@
     }
     function logout() {
         try { sessionStorage.removeItem(PASS_KEY); localStorage.removeItem(PASS_KEY); } catch (e) { }
+        cacheClear();
         location.reload();
     }
 
     let published = null;
     async function getPublished() {
         if (published) return published;
-        const res = await fetch('data.json', { cache: 'no-store' });
+
+        const isPlayPage = /play\.html/i.test(location.pathname);
+        const saved = getSaved();
+
+        // パスワード保存済みなら、HEADリクエストでdata.jsonの更新有無だけ確認し、未更新ならIndexedDBから瞬時に復元
+        let remoteSig = '';
+        if (saved) {
+            try {
+                const headRes = await fetch('data.json', { method: 'HEAD', cache: 'no-cache' });
+                if (headRes.ok) {
+                    remoteSig = (headRes.headers.get('etag') || '') + '|' + (headRes.headers.get('last-modified') || '') + '|' + (headRes.headers.get('content-length') || '');
+                }
+                if (remoteSig && remoteSig !== '||') {
+                    const cachedMeta = await cacheGet('meta');
+                    if (cachedMeta && cachedMeta.sig === remoteSig) {
+                        const light = await cacheGet('light');
+                        if (light) {
+                            if (isPlayPage) {
+                                const diagrams = await cacheGet('diagrams');
+                                if (light.scoutingExtra && Array.isArray(diagrams)) {
+                                    light.scoutingExtra.playDiagrams = diagrams;
+                                }
+                            }
+                            published = light;
+                            published.__encrypted = true;
+                            addLogoutButton();
+                            return published;
+                        }
+                    }
+                }
+            } catch (_) {}
+        }
+
+        const res = await fetch('data.json', { cache: 'no-cache' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!remoteSig) {
+            remoteSig = (res.headers.get('etag') || '') + '|' + (res.headers.get('last-modified') || '') + '|' + (res.headers.get('content-length') || '');
+        }
         const payload = await res.json();
         if (!payload.enc) return (published = payload);
         if (!cryptoAvailable()) throw new Error('この接続では暗号を解除できません（https で開いてください）。');
-        const saved = getSaved();
+
         if (saved) {
             try { published = await decrypt(payload, saved); savePass(saved, false); }
             catch (e) { try { localStorage.removeItem(PASS_KEY); sessionStorage.removeItem(PASS_KEY); } catch (_) { } }
@@ -153,6 +234,23 @@
         }
         published.__encrypted = true;
         addLogoutButton();
+
+        // 復号済みデータを「軽量本体（全画面用）」と「図面配列（Play Diagram専用）」に分けてIndexedDBにキャッシュ
+        try {
+            const diagrams = (published.scoutingExtra && Array.isArray(published.scoutingExtra.playDiagrams))
+                ? published.scoutingExtra.playDiagrams
+                : [];
+            const lightCopy = Object.assign({}, published);
+            if (lightCopy.scoutingExtra) {
+                lightCopy.scoutingExtra = Object.assign({}, lightCopy.scoutingExtra, { playDiagrams: [] });
+            }
+            cacheSet({
+                meta: { sig: remoteSig || String(payload.salt || ''), savedAt: Date.now() },
+                light: lightCopy,
+                diagrams: diagrams
+            });
+        } catch (_) {}
+
         return published;
     }
 

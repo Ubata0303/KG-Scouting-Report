@@ -505,8 +505,97 @@ body {
         renderGrid();
     }
 
+    const BATCH_SIZE = 24;
+    let renderedCount = 0;
+    let scrollObserver = null;
+
+    function createPlayCard(d, idx) {
+        const card = document.createElement('div');
+        card.className = 'play-card';
+
+        const gameBadge = d.gameName ? `<span class="badge-game">${esc(d.gameName)}</span>` : '';
+        const numText = d.playNum ? `#${d.playNum}` : (d.page ? `P.${d.page}` : '');
+        const ddText = d.downDist || '';
+        const formText = d.formation || '';
+        const playText = d.playName || 'PLAY';
+        const notesText = d.notes ? `<span class="notes-tag">💬 ${esc(d.notes)}</span>` : '';
+
+        card.innerHTML = `
+            <div class="play-card-head">
+                <div class="play-badge-group">
+                    ${gameBadge}
+                    ${numText ? `<span class="badge-num">${esc(numText)}</span>` : ''}
+                    ${ddText ? `<span class="badge-dd">${esc(ddText)}</span>` : ''}
+                    ${formText ? `<span class="badge-form">${esc(formText)}</span>` : ''}
+                </div>
+                <div class="play-title-main">${esc(playText)}</div>
+            </div>
+            <div class="play-card-body"></div>
+            ${notesText ? `<div class="play-card-footer">${notesText}</div>` : ''}
+        `;
+
+        const img = document.createElement('img');
+        img.className = 'play-card-img';
+        img.alt = playText;
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.src = d.image;
+        card.querySelector('.play-card-body').appendChild(img);
+
+        card.addEventListener('click', () => openModal(idx));
+        return card;
+    }
+
+    function renderNextBatch() {
+        const oldSentinel = document.getElementById('play-grid-sentinel');
+        if (oldSentinel) oldSentinel.remove();
+        if (scrollObserver) {
+            scrollObserver.disconnect();
+            scrollObserver = null;
+        }
+
+        const nextEnd = Math.min(renderedCount + BATCH_SIZE, filteredDiagrams.length);
+        const frag = document.createDocumentFragment();
+        for (let i = renderedCount; i < nextEnd; i++) {
+            frag.appendChild(createPlayCard(filteredDiagrams[i], i));
+        }
+        renderedCount = nextEnd;
+
+        if (renderedCount < filteredDiagrams.length) {
+            const sentinel = document.createElement('div');
+            sentinel.id = 'play-grid-sentinel';
+            sentinel.style.cssText = 'grid-column: 1 / -1; text-align: center; padding: 1.2rem;';
+            const moreBtn = document.createElement('button');
+            moreBtn.type = 'button';
+            moreBtn.className = 'reset-btn';
+            moreBtn.style.cssText = 'padding: 10px 20px; font-size: 0.9rem; background: #fff;';
+            moreBtn.textContent = `さらに表示する（残り ${filteredDiagrams.length - renderedCount} プレー）`;
+            moreBtn.onclick = renderNextBatch;
+            sentinel.appendChild(moreBtn);
+            frag.appendChild(sentinel);
+
+            playGrid.appendChild(frag);
+
+            if ('IntersectionObserver' in window) {
+                scrollObserver = new IntersectionObserver(entries => {
+                    if (entries.some(e => e.isIntersecting)) {
+                        renderNextBatch();
+                    }
+                }, { rootMargin: '800px' });
+                scrollObserver.observe(sentinel);
+            }
+        } else {
+            playGrid.appendChild(frag);
+        }
+    }
+
     function renderGrid() {
         countBadge.innerHTML = `表示中: <b>${filteredDiagrams.length}</b> / ${allDiagrams.length} プレー`;
+
+        if (scrollObserver) {
+            scrollObserver.disconnect();
+            scrollObserver = null;
+        }
 
         if (filteredDiagrams.length === 0) {
             playGrid.innerHTML = `
@@ -519,36 +608,8 @@ body {
         }
 
         playGrid.innerHTML = '';
-        filteredDiagrams.forEach((d, idx) => {
-            const card = document.createElement('div');
-            card.className = 'play-card';
-
-            const gameBadge = d.gameName ? `<span class="badge-game">${esc(d.gameName)}</span>` : '';
-            const numText = d.playNum ? `#${d.playNum}` : (d.page ? `P.${d.page}` : '');
-            const ddText = d.downDist || '';
-            const formText = d.formation || '';
-            const playText = d.playName || 'PLAY';
-            const notesText = d.notes ? `<span class="notes-tag">💬 ${esc(d.notes)}</span>` : '';
-
-            card.innerHTML = `
-                <div class="play-card-head">
-                    <div class="play-badge-group">
-                        ${gameBadge}
-                        ${numText ? `<span class="badge-num">${esc(numText)}</span>` : ''}
-                        ${ddText ? `<span class="badge-dd">${esc(ddText)}</span>` : ''}
-                        ${formText ? `<span class="badge-form">${esc(formText)}</span>` : ''}
-                    </div>
-                    <div class="play-title-main">${esc(playText)}</div>
-                </div>
-                <div class="play-card-body">
-                    <img src="${d.image}" alt="${esc(playText)}" class="play-card-img" loading="lazy">
-                </div>
-                ${notesText ? `<div class="play-card-footer">${notesText}</div>` : ''}
-            `;
-
-            card.addEventListener('click', () => openModal(idx));
-            playGrid.appendChild(card);
-        });
+        renderedCount = 0;
+        renderNextBatch();
     }
 
     function esc(s) {
