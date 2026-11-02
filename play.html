@@ -70,6 +70,8 @@ body {
     display: flex;
     flex-direction: column;
     gap: 3px;
+    position: relative;
+    min-width: 0;
 }
 .filter-label {
     font-size: 0.72rem;
@@ -78,7 +80,13 @@ body {
     text-transform: uppercase;
     letter-spacing: 0.04em;
 }
-.filter-select {
+.multi-select {
+    position: relative;
+    width: 100%;
+    user-select: none;
+}
+.multi-select-btn {
+    width: 100%;
     padding: 8px 10px;
     border-radius: 8px;
     border: 1px solid var(--border-color);
@@ -88,11 +96,122 @@ body {
     font-weight: 600;
     cursor: pointer;
     outline: none;
-    transition: border-color 0.15s;
-    width: 100%;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    text-align: left;
+    box-sizing: border-box;
 }
-.filter-select:focus {
+.multi-select-btn:hover {
+    border-color: #94a3b8;
+}
+.multi-select.open .multi-select-btn {
     border-color: var(--accent-blue);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+.multi-select-btn.has-selection {
+    background: #eff6ff;
+    border-color: var(--accent-blue);
+    color: #1d4ed8;
+    font-weight: 700;
+}
+.multi-select-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+}
+.multi-select-arrow {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+    transition: transform 0.15s;
+}
+.multi-select.open .multi-select-arrow {
+    transform: rotate(180deg);
+    color: var(--accent-blue);
+}
+.multi-select-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 100%;
+    width: max-content;
+    max-width: min(300px, 88vw);
+    max-height: 270px;
+    overflow-y: auto;
+    background: #fff;
+    border: 1px solid #cbd5e1;
+    border-radius: 10px;
+    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.16);
+    z-index: 500;
+    padding: 4px;
+    box-sizing: border-box;
+}
+.multi-select.open .multi-select-menu {
+    display: block;
+}
+.ms-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.84rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    transition: background 0.1s;
+}
+.ms-option:hover {
+    background: #f1f5f9;
+}
+.ms-option.checked {
+    background: #eff6ff;
+    color: #1d4ed8;
+    font-weight: 700;
+}
+.ms-option-all {
+    border-bottom: 1px solid #e2e8f0;
+    margin-bottom: 3px;
+    padding-bottom: 8px;
+}
+.ms-checkbox {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent-blue);
+    cursor: pointer;
+    flex-shrink: 0;
+    margin: 0;
+    pointer-events: none;
+}
+.ms-label {
+    flex: 1;
+    word-break: break-word;
+}
+.ms-count {
+    font-size: 0.74rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+    flex-shrink: 0;
+}
+@media (max-width: 640px) {
+    .filter-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+    }
+    .multi-select-btn {
+        padding: 7px 9px;
+        font-size: 0.8rem;
+    }
+    .filter-group:nth-child(2n) .multi-select-menu {
+        left: auto;
+        right: 0;
+    }
 }
 .filter-meta {
     display: flex;
@@ -380,48 +499,68 @@ body {
 </head>
 <body data-mode="viewer" data-extra-page="true">
     <div class="container">
-        <!-- 絞り込みフィルター -->
+        <!-- 絞り込みフィルター（複数選択対応） -->
         <div class="filter-card">
             <div class="filter-grid">
                 <div class="filter-group">
-                    <label class="filter-label" for="filter-game">試合 (GAME)</label>
-                    <select id="filter-game" class="filter-select">
-                        <option value="ALL">全試合 (ALL)</option>
-                    </select>
+                    <label class="filter-label">試合 (GAME)</label>
+                    <div class="multi-select" id="ms-game" data-default-label="全試合 (ALL)">
+                        <button type="button" class="multi-select-btn">
+                            <span class="multi-select-text">全試合 (ALL)</span>
+                            <span class="multi-select-arrow">▾</span>
+                        </button>
+                        <div class="multi-select-menu"></div>
+                    </div>
                 </div>
                 <div class="filter-group">
-                    <label class="filter-label" for="filter-personnel">PERSONNEL</label>
-                    <select id="filter-personnel" class="filter-select">
-                        <option value="ALL">すべて (ALL)</option>
-                    </select>
+                    <label class="filter-label">PERSONNEL</label>
+                    <div class="multi-select" id="ms-personnel" data-default-label="すべて (ALL)">
+                        <button type="button" class="multi-select-btn">
+                            <span class="multi-select-text">すべて (ALL)</span>
+                            <span class="multi-select-arrow">▾</span>
+                        </button>
+                        <div class="multi-select-menu"></div>
+                    </div>
                 </div>
                 <div class="filter-group">
-                    <label class="filter-label" for="filter-formation">体型 (FORMATION)</label>
-                    <select id="filter-formation" class="filter-select">
-                        <option value="ALL">すべて (ALL)</option>
-                    </select>
+                    <label class="filter-label">体型 (FORMATION)</label>
+                    <div class="multi-select" id="ms-formation" data-default-label="すべて (ALL)">
+                        <button type="button" class="multi-select-btn">
+                            <span class="multi-select-text">すべて (ALL)</span>
+                            <span class="multi-select-arrow">▾</span>
+                        </button>
+                        <div class="multi-select-menu"></div>
+                    </div>
                 </div>
                 <div class="filter-group">
-                    <label class="filter-label" for="filter-play">PLAY名</label>
-                    <select id="filter-play" class="filter-select">
-                        <option value="ALL">すべて (ALL)</option>
-                    </select>
+                    <label class="filter-label">PLAY名</label>
+                    <div class="multi-select" id="ms-play" data-default-label="すべて (ALL)">
+                        <button type="button" class="multi-select-btn">
+                            <span class="multi-select-text">すべて (ALL)</span>
+                            <span class="multi-select-arrow">▾</span>
+                        </button>
+                        <div class="multi-select-menu"></div>
+                    </div>
                 </div>
                 <div class="filter-group">
-                    <label class="filter-label" for="filter-down">DOWN</label>
-                    <select id="filter-down" class="filter-select">
-                        <option value="ALL">すべて (ALL)</option>
-                        <option value="1">1st Down</option>
-                        <option value="2">2nd Down</option>
-                        <option value="3">3rd Down</option>
-                        <option value="4">4th Down</option>
-                    </select>
+                    <label class="filter-label">DOWN</label>
+                    <div class="multi-select" id="ms-down" data-default-label="すべて (ALL)">
+                        <button type="button" class="multi-select-btn">
+                            <span class="multi-select-text">すべて (ALL)</span>
+                            <span class="multi-select-arrow">▾</span>
+                        </button>
+                        <div class="multi-select-menu"></div>
+                    </div>
                 </div>
                 <div class="filter-group">
-                    <label class="filter-label" for="filter-distance">DISTANCE</label>
-                    <select id="filter-distance" class="filter-select">
-                        <option value="ALL">すべて (ALL)</option>
-                    </select>
+                    <label class="filter-label">DISTANCE</label>
+                    <div class="multi-select" id="ms-distance" data-default-label="すべて (ALL)">
+                        <button type="button" class="multi-select-btn">
+                            <span class="multi-select-text">すべて (ALL)</span>
+                            <span class="multi-select-arrow">▾</span>
+                        </button>
+                        <div class="multi-select-menu"></div>
+                    </div>
                 </div>
             </div>
             <div class="filter-meta">
@@ -451,12 +590,21 @@ body {
     <script src="scouting-extra.js"></script>
     <script>
 (function () {
-    const filterGame = document.getElementById('filter-game');
-    const filterPersonnel = document.getElementById('filter-personnel');
-    const filterPlay = document.getElementById('filter-play');
-    const filterFormation = document.getElementById('filter-formation');
-    const filterDown = document.getElementById('filter-down');
-    const filterDistance = document.getElementById('filter-distance');
+    const FILTER_KEYS = ['game', 'personnel', 'formation', 'play', 'down', 'distance'];
+    const multiSelectState = {};
+    FILTER_KEYS.forEach(key => {
+        const el = document.getElementById('ms-' + key);
+        multiSelectState[key] = {
+            el,
+            btn: el ? el.querySelector('.multi-select-btn') : null,
+            textEl: el ? el.querySelector('.multi-select-text') : null,
+            menu: el ? el.querySelector('.multi-select-menu') : null,
+            defaultLabel: el ? (el.dataset.defaultLabel || 'すべて (ALL)') : 'すべて (ALL)',
+            selected: new Set(),
+            options: []
+        };
+    });
+
     const resetFilterBtn = document.getElementById('reset-filter-btn');
     const countBadge = document.getElementById('count-badge');
     const playGrid = document.getElementById('play-grid');
@@ -480,11 +628,122 @@ body {
         applyFilters();
     }
 
+    function closeAllMultiSelects(exceptKey) {
+        FILTER_KEYS.forEach(k => {
+            if (k !== exceptKey && multiSelectState[k].el) {
+                multiSelectState[k].el.classList.remove('open');
+            }
+        });
+    }
+
+    function updateMultiSelectUI(key) {
+        const st = multiSelectState[key];
+        if (!st || !st.el || !st.menu) return;
+
+        const isAll = st.selected.size === 0;
+        const allOpt = st.menu.querySelector('.ms-option-all');
+        if (allOpt) {
+            allOpt.classList.toggle('checked', isAll);
+            const cb = allOpt.querySelector('.ms-checkbox');
+            if (cb) cb.checked = isAll;
+        }
+
+        st.menu.querySelectorAll('.ms-option-item').forEach(row => {
+            const val = row.dataset.value;
+            const checked = st.selected.has(val);
+            row.classList.toggle('checked', checked);
+            const cb = row.querySelector('.ms-checkbox');
+            if (cb) cb.checked = checked;
+        });
+
+        if (isAll) {
+            st.textEl.textContent = st.defaultLabel;
+            st.btn.classList.remove('has-selection');
+        } else {
+            const selectedLabels = st.options
+                .filter(o => st.selected.has(o.value))
+                .map(o => o.shortLabel || o.label);
+            if (selectedLabels.length <= 2) {
+                st.textEl.textContent = selectedLabels.join(', ');
+            } else {
+                st.textEl.textContent = `${selectedLabels[0]}, ${selectedLabels[1]} (+${selectedLabels.length - 2})`;
+            }
+            st.btn.classList.add('has-selection');
+        }
+    }
+
+    function renderMultiSelectMenu(key, options) {
+        const st = multiSelectState[key];
+        if (!st || !st.el || !st.menu) return;
+        st.options = options;
+
+        const validSet = new Set(options.map(o => o.value));
+        Array.from(st.selected).forEach(v => {
+            if (!validSet.has(v)) st.selected.delete(v);
+        });
+
+        st.menu.innerHTML = '';
+
+        const allRow = document.createElement('div');
+        allRow.className = 'ms-option ms-option-all';
+        allRow.innerHTML = `
+            <input type="checkbox" class="ms-checkbox" tabindex="-1">
+            <span class="ms-label">${esc(st.defaultLabel)}</span>
+        `;
+        allRow.addEventListener('click', e => {
+            e.stopPropagation();
+            st.selected.clear();
+            updateMultiSelectUI(key);
+            applyFilters();
+        });
+        st.menu.appendChild(allRow);
+
+        options.forEach(opt => {
+            const row = document.createElement('div');
+            row.className = 'ms-option ms-option-item';
+            row.dataset.value = opt.value;
+            row.innerHTML = `
+                <input type="checkbox" class="ms-checkbox" tabindex="-1">
+                <span class="ms-label">${esc(opt.label)}</span>
+                <span class="ms-count">(${opt.count})</span>
+            `;
+            row.addEventListener('click', e => {
+                e.stopPropagation();
+                if (st.selected.has(opt.value)) {
+                    st.selected.delete(opt.value);
+                } else {
+                    st.selected.add(opt.value);
+                }
+                updateMultiSelectUI(key);
+                applyFilters();
+            });
+            st.menu.appendChild(row);
+        });
+
+        updateMultiSelectUI(key);
+    }
+
+    FILTER_KEYS.forEach(key => {
+        const st = multiSelectState[key];
+        if (!st.btn) return;
+        st.btn.addEventListener('click', e => {
+            e.stopPropagation();
+            const isOpen = st.el.classList.contains('open');
+            closeAllMultiSelects(key);
+            st.el.classList.toggle('open', !isOpen);
+        });
+    });
+
+    document.addEventListener('click', () => {
+        closeAllMultiSelects(null);
+    });
+
     function populateFilterOptions() {
         const gameCounts = {};
         const personnelCounts = {};
         const playCounts = {};
         const formationCounts = {};
+        const downCounts = { '1': 0, '2': 0, '3': 0, '4': 0 };
         const distanceCounts = {};
 
         allDiagrams.forEach(d => {
@@ -500,94 +759,71 @@ body {
             const f = (d.formation || '').trim();
             if (f) formationCounts[f] = (formationCounts[f] || 0) + 1;
 
-            const dist = (d.distance || '').trim();
+            const dw = String(d.down || '').trim();
+            if (dw) downCounts[dw] = (downCounts[dw] || 0) + 1;
+
+            const dist = String(d.distance || '').trim().toUpperCase();
             if (dist) distanceCounts[dist] = (distanceCounts[dist] || 0) + 1;
         });
 
-        // 試合名の選択肢
-        const prevGameVal = filterGame.value;
-        filterGame.innerHTML = '<option value="ALL">全試合 (ALL)</option>';
-        Object.keys(gameCounts).sort().forEach(g => {
-            const opt = document.createElement('option');
-            opt.value = g;
-            opt.textContent = `${g} (${gameCounts[g]})`;
-            filterGame.appendChild(opt);
+        renderMultiSelectMenu('game', Object.keys(gameCounts).sort().map(g => ({
+            value: g, label: g, shortLabel: g, count: gameCounts[g]
+        })));
+
+        renderMultiSelectMenu('personnel', Object.keys(personnelCounts).sort().map(p => ({
+            value: p, label: p, shortLabel: p, count: personnelCounts[p]
+        })));
+
+        renderMultiSelectMenu('formation', Object.keys(formationCounts).sort().map(f => ({
+            value: f, label: f, shortLabel: f, count: formationCounts[f]
+        })));
+
+        renderMultiSelectMenu('play', Object.keys(playCounts).sort().map(p => ({
+            value: p, label: p, shortLabel: p, count: playCounts[p]
+        })));
+
+        const downLabels = [
+            { value: '1', label: '1st Down', shortLabel: '1st' },
+            { value: '2', label: '2nd Down', shortLabel: '2nd' },
+            { value: '3', label: '3rd Down', shortLabel: '3rd' },
+            { value: '4', label: '4th Down', shortLabel: '4th' }
+        ];
+        renderMultiSelectMenu('down', downLabels.map(dl => ({
+            value: dl.value,
+            label: dl.label,
+            shortLabel: dl.shortLabel,
+            count: downCounts[dl.value] || 0
+        })));
+
+        const sortedDistances = Object.keys(distanceCounts).sort((a, b) => {
+            const numA = parseFloat(a);
+            const numB = parseFloat(b);
+            if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+            if (!isNaN(numA)) return -1;
+            if (!isNaN(numB)) return 1;
+            return a.localeCompare(b);
         });
-        if (gameCounts[prevGameVal]) filterGame.value = prevGameVal;
-
-        // Personnelの選択肢
-        const prevPersVal = filterPersonnel ? filterPersonnel.value : 'ALL';
-        if (filterPersonnel) {
-            filterPersonnel.innerHTML = '<option value="ALL">すべて (ALL)</option>';
-            Object.keys(personnelCounts).sort().forEach(p => {
-                const opt = document.createElement('option');
-                opt.value = p;
-                opt.textContent = `${p} (${personnelCounts[p]})`;
-                filterPersonnel.appendChild(opt);
-            });
-            if (personnelCounts[prevPersVal]) filterPersonnel.value = prevPersVal;
-        }
-
-        // 体型（Formation）の選択肢
-        const prevFormVal = filterFormation.value;
-        filterFormation.innerHTML = '<option value="ALL">すべて (ALL)</option>';
-        Object.keys(formationCounts).sort().forEach(f => {
-            const opt = document.createElement('option');
-            opt.value = f;
-            opt.textContent = `${f} (${formationCounts[f]})`;
-            filterFormation.appendChild(opt);
-        });
-        if (formationCounts[prevFormVal]) filterFormation.value = prevFormVal;
-
-        // Play名の選択肢（アルファベット順）
-        const prevPlayVal = filterPlay.value;
-        filterPlay.innerHTML = '<option value="ALL">すべて (ALL)</option>';
-        Object.keys(playCounts).sort().forEach(p => {
-            const opt = document.createElement('option');
-            opt.value = p;
-            opt.textContent = `${p} (${playCounts[p]})`;
-            filterPlay.appendChild(opt);
-        });
-        if (playCounts[prevPlayVal]) filterPlay.value = prevPlayVal;
-
-        // Distanceの選択肢（数値昇順、文字は末尾）
-        if (filterDistance) {
-            const prevDistVal = filterDistance.value;
-            filterDistance.innerHTML = '<option value="ALL">すべて (ALL)</option>';
-            const sortedDistances = Object.keys(distanceCounts).sort((a, b) => {
-                const numA = parseFloat(a);
-                const numB = parseFloat(b);
-                if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
-                if (!isNaN(numA)) return -1;
-                if (!isNaN(numB)) return 1;
-                return a.localeCompare(b);
-            });
-            sortedDistances.forEach(dist => {
-                const opt = document.createElement('option');
-                opt.value = dist;
-                opt.textContent = `${dist} (${distanceCounts[dist]})`;
-                filterDistance.appendChild(opt);
-            });
-            if (distanceCounts[prevDistVal]) filterDistance.value = prevDistVal;
-        }
+        renderMultiSelectMenu('distance', sortedDistances.map(dist => ({
+            value: dist, label: dist, shortLabel: dist, count: distanceCounts[dist]
+        })));
     }
 
-    // 絞り込み実行（初期表示はインポート順のまま！）
+    // 絞り込み実行（初期表示はインポート順のまま！ 同項目内はOR、項目間はAND）
     function applyFilters() {
-        const selGame = filterGame.value;
-        const selPersonnel = filterPersonnel ? filterPersonnel.value : 'ALL';
-        const selForm = filterFormation.value;
-        const selPlay = filterPlay.value;
-        const selDown = filterDown.value;
-        const selDist = filterDistance ? filterDistance.value : 'ALL';
+        const selGame = multiSelectState.game.selected;
+        const selPersonnel = multiSelectState.personnel.selected;
+        const selForm = multiSelectState.formation.selected;
+        const selPlay = multiSelectState.play.selected;
+        const selDown = multiSelectState.down.selected;
+        const selDist = multiSelectState.distance.selected;
 
         filteredDiagrams = allDiagrams.filter(d => {
-            if (selGame !== 'ALL' && d.gameName !== selGame) return false;
-            if (selPersonnel !== 'ALL' && d.personnel !== selPersonnel) return false;
-            if (selForm !== 'ALL' && d.formation !== selForm) return false;
-            if (selPlay !== 'ALL' && d.playName !== selPlay) return false;
-            if (selDown !== 'ALL' && String(d.down) !== String(selDown)) return false;
-            if (selDist !== 'ALL' && String(d.distance || '').toUpperCase() !== String(selDist).toUpperCase()) return false;
+            if (selGame.size > 0 && !selGame.has((d.gameName || '').trim())) return false;
+            if (selPersonnel.size > 0 && !selPersonnel.has((d.personnel || '').trim())) return false;
+            if (selForm.size > 0 && !selForm.has((d.formation || '').trim())) return false;
+            if (selPlay.size > 0 && !selPlay.has((d.playName || '').trim())) return false;
+            if (selDown.size > 0 && !selDown.has(String(d.down || '').trim())) return false;
+            if (selDist.size > 0 && !selDist.has(String(d.distance || '').trim().toUpperCase())) return false;
             return true;
         });
 
@@ -1062,19 +1298,12 @@ body {
         }
     }
 
-    filterGame.addEventListener('change', applyFilters);
-    if (filterPersonnel) filterPersonnel.addEventListener('change', applyFilters);
-    filterFormation.addEventListener('change', applyFilters);
-    filterPlay.addEventListener('change', applyFilters);
-    filterDown.addEventListener('change', applyFilters);
-    if (filterDistance) filterDistance.addEventListener('change', applyFilters);
     resetFilterBtn.addEventListener('click', () => {
-        filterGame.value = 'ALL';
-        if (filterPersonnel) filterPersonnel.value = 'ALL';
-        filterFormation.value = 'ALL';
-        filterPlay.value = 'ALL';
-        filterDown.value = 'ALL';
-        if (filterDistance) filterDistance.value = 'ALL';
+        FILTER_KEYS.forEach(key => {
+            multiSelectState[key].selected.clear();
+            updateMultiSelectUI(key);
+        });
+        closeAllMultiSelects(null);
         applyFilters();
     });
 
