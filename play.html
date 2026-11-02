@@ -384,25 +384,31 @@ body {
         <div class="filter-card">
             <div class="filter-grid">
                 <div class="filter-group">
-                    <label class="filter-label" for="filter-game">試合 (Game)</label>
+                    <label class="filter-label" for="filter-game">試合 (GAME)</label>
                     <select id="filter-game" class="filter-select">
                         <option value="ALL">全試合 (ALL)</option>
                     </select>
                 </div>
                 <div class="filter-group">
-                    <label class="filter-label" for="filter-personnel">Personnel</label>
+                    <label class="filter-label" for="filter-personnel">PERSONNEL</label>
                     <select id="filter-personnel" class="filter-select">
                         <option value="ALL">すべて (ALL)</option>
                     </select>
                 </div>
                 <div class="filter-group">
-                    <label class="filter-label" for="filter-formation">体型 (Formation)</label>
+                    <label class="filter-label" for="filter-formation">体型 (FORMATION)</label>
                     <select id="filter-formation" class="filter-select">
                         <option value="ALL">すべて (ALL)</option>
                     </select>
                 </div>
                 <div class="filter-group">
-                    <label class="filter-label" for="filter-down">Down</label>
+                    <label class="filter-label" for="filter-play">PLAY名</label>
+                    <select id="filter-play" class="filter-select">
+                        <option value="ALL">すべて (ALL)</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label class="filter-label" for="filter-down">DOWN</label>
                     <select id="filter-down" class="filter-select">
                         <option value="ALL">すべて (ALL)</option>
                         <option value="1">1st Down</option>
@@ -412,8 +418,8 @@ body {
                     </select>
                 </div>
                 <div class="filter-group">
-                    <label class="filter-label" for="filter-play">Play名</label>
-                    <select id="filter-play" class="filter-select">
+                    <label class="filter-label" for="filter-distance">DISTANCE</label>
+                    <select id="filter-distance" class="filter-select">
                         <option value="ALL">すべて (ALL)</option>
                     </select>
                 </div>
@@ -450,6 +456,7 @@ body {
     const filterPlay = document.getElementById('filter-play');
     const filterFormation = document.getElementById('filter-formation');
     const filterDown = document.getElementById('filter-down');
+    const filterDistance = document.getElementById('filter-distance');
     const resetFilterBtn = document.getElementById('reset-filter-btn');
     const countBadge = document.getElementById('count-badge');
     const playGrid = document.getElementById('play-grid');
@@ -478,6 +485,7 @@ body {
         const personnelCounts = {};
         const playCounts = {};
         const formationCounts = {};
+        const distanceCounts = {};
 
         allDiagrams.forEach(d => {
             const g = (d.gameName || '').trim();
@@ -491,6 +499,9 @@ body {
 
             const f = (d.formation || '').trim();
             if (f) formationCounts[f] = (formationCounts[f] || 0) + 1;
+
+            const dist = (d.distance || '').trim();
+            if (dist) distanceCounts[dist] = (distanceCounts[dist] || 0) + 1;
         });
 
         // 試合名の選択肢
@@ -517,6 +528,18 @@ body {
             if (personnelCounts[prevPersVal]) filterPersonnel.value = prevPersVal;
         }
 
+        // 体型（Formation）の選択肢
+        const prevFormVal = filterFormation.value;
+        filterFormation.innerHTML = '<option value="ALL">すべて (ALL)</option>';
+        Object.keys(formationCounts).sort().forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f;
+            opt.textContent = `${f} (${formationCounts[f]})`;
+            filterFormation.appendChild(opt);
+        });
+        if (formationCounts[prevFormVal]) filterFormation.value = prevFormVal;
+
+        // Play名の選択肢（アルファベット順）
         const prevPlayVal = filterPlay.value;
         filterPlay.innerHTML = '<option value="ALL">すべて (ALL)</option>';
         Object.keys(playCounts).sort().forEach(p => {
@@ -527,31 +550,44 @@ body {
         });
         if (playCounts[prevPlayVal]) filterPlay.value = prevPlayVal;
 
-        const prevFormVal = filterFormation.value;
-        filterFormation.innerHTML = '<option value="ALL">すべて (ALL)</option>';
-        Object.keys(formationCounts).sort().forEach(f => {
-            const opt = document.createElement('option');
-            opt.value = f;
-            opt.textContent = `${f} (${formationCounts[f]})`;
-            filterFormation.appendChild(opt);
-        });
-        if (formationCounts[prevFormVal]) filterFormation.value = prevFormVal;
+        // Distanceの選択肢（数値昇順、文字は末尾）
+        if (filterDistance) {
+            const prevDistVal = filterDistance.value;
+            filterDistance.innerHTML = '<option value="ALL">すべて (ALL)</option>';
+            const sortedDistances = Object.keys(distanceCounts).sort((a, b) => {
+                const numA = parseFloat(a);
+                const numB = parseFloat(b);
+                if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+                if (!isNaN(numA)) return -1;
+                if (!isNaN(numB)) return 1;
+                return a.localeCompare(b);
+            });
+            sortedDistances.forEach(dist => {
+                const opt = document.createElement('option');
+                opt.value = dist;
+                opt.textContent = `${dist} (${distanceCounts[dist]})`;
+                filterDistance.appendChild(opt);
+            });
+            if (distanceCounts[prevDistVal]) filterDistance.value = prevDistVal;
+        }
     }
 
     // 絞り込み実行（初期表示はインポート順のまま！）
     function applyFilters() {
         const selGame = filterGame.value;
         const selPersonnel = filterPersonnel ? filterPersonnel.value : 'ALL';
-        const selPlay = filterPlay.value;
         const selForm = filterFormation.value;
+        const selPlay = filterPlay.value;
         const selDown = filterDown.value;
+        const selDist = filterDistance ? filterDistance.value : 'ALL';
 
         filteredDiagrams = allDiagrams.filter(d => {
             if (selGame !== 'ALL' && d.gameName !== selGame) return false;
             if (selPersonnel !== 'ALL' && d.personnel !== selPersonnel) return false;
-            if (selPlay !== 'ALL' && d.playName !== selPlay) return false;
             if (selForm !== 'ALL' && d.formation !== selForm) return false;
+            if (selPlay !== 'ALL' && d.playName !== selPlay) return false;
             if (selDown !== 'ALL' && String(d.down) !== String(selDown)) return false;
+            if (selDist !== 'ALL' && String(d.distance || '').toUpperCase() !== String(selDist).toUpperCase()) return false;
             return true;
         });
 
@@ -1028,15 +1064,17 @@ body {
 
     filterGame.addEventListener('change', applyFilters);
     if (filterPersonnel) filterPersonnel.addEventListener('change', applyFilters);
-    filterPlay.addEventListener('change', applyFilters);
     filterFormation.addEventListener('change', applyFilters);
+    filterPlay.addEventListener('change', applyFilters);
     filterDown.addEventListener('change', applyFilters);
+    if (filterDistance) filterDistance.addEventListener('change', applyFilters);
     resetFilterBtn.addEventListener('click', () => {
         filterGame.value = 'ALL';
         if (filterPersonnel) filterPersonnel.value = 'ALL';
-        filterPlay.value = 'ALL';
         filterFormation.value = 'ALL';
+        filterPlay.value = 'ALL';
         filterDown.value = 'ALL';
+        if (filterDistance) filterDistance.value = 'ALL';
         applyFilters();
     });
 

@@ -108,17 +108,71 @@
         return null;
     }
 
+    // 過去に取り込んだ図面データも含め、新フォーマットからPersonnel/Hashを自動復元する
+    function ensureDiagramMeta(d) {
+        if (!d) return d;
+        const raw = (d.title || d.rawHeader || '').trim();
+        if (raw && raw.includes('/')) {
+            const rawParts = raw.split('/').map(s => s.trim());
+            const parts = rawParts.slice(1);
+            if (parts.length >= 5) {
+                d.downDist = d.downDist || parts[0];
+                d.hash = d.hash || parts[1].toUpperCase();
+                d.personnel = d.personnel || parts[2];
+                d.formation = parts[3];
+                d.playName = parts.slice(4).join(' / ').trim();
+            } else if (parts.length === 4) {
+                d.downDist = d.downDist || parts[0];
+                const isHash1 = /^(L|R|M|LM|RM|LT|RT|HASH|LEFT|RIGHT)$/i.test(parts[1]);
+                const isPers1 = /^\d{2}[A-Za-z]?$/.test(parts[1]);
+                const isPers2 = /^\d{2}[A-Za-z]?$/.test(parts[2]);
+                if (isHash1 && isPers2) {
+                    d.hash = d.hash || parts[1].toUpperCase();
+                    d.personnel = d.personnel || parts[2];
+                    d.formation = parts[3];
+                } else if (isHash1) {
+                    d.hash = d.hash || parts[1].toUpperCase();
+                    d.formation = parts[2];
+                    d.playName = parts[3];
+                } else if (isPers1) {
+                    d.personnel = d.personnel || parts[1];
+                    d.formation = parts[2];
+                    d.playName = parts[3];
+                }
+            }
+        }
+        // 旧パーサーで formation や playName に紛れ込んでしまった場合の自動救出
+        if (!d.personnel && d.playName && d.playName.includes('/')) {
+            const pParts = d.playName.split('/').map(s => s.trim());
+            if (/^(L|R|M|LM|RM|LT|RT)$/i.test(d.formation) && /^\d{2}[A-Za-z]?$/.test(pParts[0])) {
+                d.hash = d.formation.toUpperCase();
+                d.personnel = pParts[0];
+                d.formation = pParts[1] || '';
+                d.playName = pParts.slice(2).join(' / ').trim();
+            }
+        }
+        if (d.downDist && (!d.down || !d.distance)) {
+            const ddM = d.downDist.match(/^([1-4])\s*[-–/]\s*(\S+)/);
+            if (ddM) {
+                d.down = ddM[1];
+                d.distance = ddM[2];
+            }
+        }
+        return d;
+    }
+
     function getExtraData(publishedExtra) {
         const base = clone(DEFAULT_EXTRA);
         const saved = publishedExtra !== undefined ? publishedExtra : readRawExtra();
         if (!saved) return base;
+        const rawDiagrams = Array.isArray(saved.playDiagrams) ? saved.playDiagrams : (base.playDiagrams || []);
         return {
             opponent: saved.opponent || base.opponent,
             pdfFileName: saved.pdfFileName || null,
             memberList: saved.memberList || base.memberList,
             cadence: saved.cadence || base.cadence,
             cadencePages: Array.isArray(saved.cadencePages) ? saved.cadencePages : (saved.cadence?.pages || []),
-            playDiagrams: Array.isArray(saved.playDiagrams) ? saved.playDiagrams : (base.playDiagrams || []),
+            playDiagrams: rawDiagrams.map(ensureDiagramMeta),
             updatedAt: saved.updatedAt || null
         };
     }
