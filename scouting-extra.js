@@ -3,6 +3,7 @@
     const DEFAULT_EXTRA = {
         opponent: "20261015 / Fighters",
         memberList: {
+            numColor: "#0432ff",
             offTitle: "OFF Member List",
             offRows: [
                 [
@@ -116,6 +117,7 @@
             pdfFileName: saved.pdfFileName || null,
             memberList: saved.memberList || base.memberList,
             cadence: saved.cadence || base.cadence,
+            cadencePages: Array.isArray(saved.cadencePages) ? saved.cadencePages : (saved.cadence?.pages || []),
             playDiagrams: Array.isArray(saved.playDiagrams) ? saved.playDiagrams : (base.playDiagrams || []),
             updatedAt: saved.updatedAt || null
         };
@@ -128,6 +130,7 @@
             pdfFileName: partial.pdfFileName !== undefined ? partial.pdfFileName : current.pdfFileName,
             memberList: partial.memberList !== undefined ? partial.memberList : current.memberList,
             cadence: partial.cadence !== undefined ? partial.cadence : current.cadence,
+            cadencePages: partial.cadencePages !== undefined ? partial.cadencePages : current.cadencePages,
             playDiagrams: partial.playDiagrams !== undefined ? partial.playDiagrams : current.playDiagrams,
             updatedAt: new Date().toISOString()
         };
@@ -259,10 +262,46 @@
         const areaTokens = tokens.filter(t => t.top >= minTop && t.top <= maxTop);
         // 背番号候補：1〜2桁の数字で、フォントサイズが大きめ（>=18）
         // ※右下のページ番号（x > 740 && top > 550）は除外
-        const numTokens = areaTokens.filter(t => {
+        const rawNumTokens = areaTokens.filter(t => {
             if (t.x > 740 && t.top > 550) return false;
             return /^\d{1,2}$/.test(t.text) && t.fontSize >= 18;
         });
+
+        // 縦に並んだ重なり背番号（例: 木田 75/72、伊藤 90/43）を検出して1つのカードに統合
+        rawNumTokens.sort((a, b) => a.top - b.top);
+        const numTokens = [];
+        const usedNumIdx = new Set();
+        for (let i = 0; i < rawNumTokens.length; i++) {
+            if (usedNumIdx.has(i)) continue;
+            const t1 = rawNumTokens[i];
+            let pair = null;
+            let pairIdx = -1;
+            for (let j = i + 1; j < rawNumTokens.length; j++) {
+                if (usedNumIdx.has(j)) continue;
+                const t2 = rawNumTokens[j];
+                // X座標がほぼ同じ（同一カード列、差22pt以内）かつY座標が近い（差60pt以内）
+                if (Math.abs(t1.centerX - t2.centerX) < 22 && Math.abs(t1.top - t2.top) < 60) {
+                    pair = t2;
+                    pairIdx = j;
+                    break;
+                }
+            }
+            if (pair) {
+                usedNumIdx.add(pairIdx);
+                numTokens.push({
+                    text: t1.text + '\n' + pair.text,
+                    top: t1.top,
+                    bottomNumTop: pair.top,
+                    x: Math.min(t1.x, pair.x),
+                    width: Math.max(t1.width, pair.width),
+                    centerX: (t1.centerX + pair.centerX) / 2,
+                    fontSize: t1.fontSize,
+                    isMultiNum: true
+                });
+            } else {
+                numTokens.push(t1);
+            }
+        }
 
         // 背番号をY座標で行クラスタリング（差が45pt以内なら同じ段）
         numTokens.sort((a, b) => a.top - b.top);
@@ -280,8 +319,19 @@
             if (!placed) rows.push([nt]);
         }
 
+        const STANDALONE_POS = /^(QB|RB|TE|WR|OL|C|G|T|LT|LG|RG|RT|DL|DE|DT|LB|DB|CB|S|FS|SS|K|P|LS|SN|HOL|BD|PP|PR|KR)$/i;
+
         const cardRows = [];
-        for (const row of rows) {
+        for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+            const row = rows[rIdx];
+            const curAvgTop = row.reduce((s, x) => s + x.top, 0) / row.length;
+            const prevAvgTop = rIdx > 0 ? rows[rIdx - 1].reduce((s, x) => s + x.top, 0) / rows[rIdx - 1].length : null;
+            const nextAvgTop = rIdx < rows.length - 1 ? rows[rIdx + 1].reduce((s, x) => s + x.top, 0) / rows[rIdx + 1].length : null;
+
+            // 前後の段の境界の中間値を計算し、次段のポジション表記などが混入するのを防ぐ
+            const rowMinTop = prevAvgTop ? (prevAvgTop + curAvgTop) / 2 : curAvgTop - 85;
+            const rowMaxTop = nextAvgTop ? (curAvgTop + nextAvgTop) / 2 : curAvgTop + 90;
+
             row.sort((a, b) => a.centerX - b.centerX);
             const cards = [];
             for (let i = 0; i < row.length; i++) {
@@ -289,21 +339,28 @@
                 const leftBound = i > 0 ? (row[i - 1].centerX + nt.centerX) / 2 : nt.centerX - 65;
                 const rightBound = i < row.length - 1 ? (nt.centerX + row[i + 1].centerX) / 2 : nt.centerX + 65;
 
-                // このカードのX範囲内にあるトークンを抽出（ポジションは背番号の約70pt上にあるため -85pt まで見る）
+                // このカードのX範囲内・段のY範囲内にあるトークンを抽出
                 const colTokens = areaTokens.filter(t =>
                     t !== nt &&
                     t.centerX >= leftBound &&
                     t.centerX <= rightBound &&
-                    t.top >= nt.top - 85 &&
-                    t.top <= nt.top + 95
+                    t.top >= rowMinTop &&
+                    t.top <= rowMaxTop
                 );
 
-                // 背番号より上にあるトークン＝ポジション
-                const above = colTokens.filter(t => t.top < nt.top - 8).sort((a, b) => b.top - a.top);
+                // 背番号より上にあるトークン＝ポジション（数字のみは除外）
+                const above = colTokens
+                    .filter(t => t.top < nt.top - 8 && !/^\d+$/.test(t.text))
+                    .sort((a, b) => b.top - a.top);
                 const pos = above.length ? above[0].text : '';
 
                 // 背番号より下にあるトークン＝名前、身長体重など
-                const below = colTokens.filter(t => t.top > nt.top + 10).sort((a, b) => (Math.abs(a.top - b.top) < 5 ? a.x - b.x : a.top - b.top));
+                const numBottom = nt.bottomNumTop ? nt.bottomNumTop + 8 : nt.top + 10;
+                const below = colTokens
+                    .filter(t => t.top > numBottom)
+                    .filter(t => !STANDALONE_POS.test(t.text.trim()))
+                    .sort((a, b) => (Math.abs(a.top - b.top) < 5 ? a.x - b.x : a.top - b.top));
+
                 // 同じ行（top差 < 5pt）は結合
                 const belowLines = [];
                 for (const bt of below) {
@@ -317,6 +374,10 @@
 
                 let rawName = belowLines[0] ? belowLines[0].text : '';
                 let meta = belowLines.slice(1).map(x => x.text).join(' ');
+
+                // 末尾に付着した単独ポジション略称（例: 172cm/103kg RB の "RB"）を除去
+                meta = meta.replace(/\s+(QB|RB|TE|WR|OL|C|G|T|LT|LG|RG|RT|DL|DE|DT|LB|DB|CB|S|FS|SS|K|P|LS|SN|HOL|BD|PP|PR|KR)$/i, '').trim();
+
                 let note = '';
                 let alert = false;
 
@@ -407,10 +468,47 @@
     }
 
     // ページをCanvasで高品質・軽量なJPEG画像データURLにレンダリングする（余白自動トリミング＆サイズ統一付き）
-    async function renderPageToJpeg(page, targetWidth = 680) {
+    // 写真（Cadence用など）を高画質のままスマホ用にリサイズ・軽量化する
+    function compressPhoto(dataUrl, maxW = 680, quality = 0.50) {
+        if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image')) {
+            return Promise.resolve(dataUrl);
+        }
+        // すでに20KB未満なら十分に軽量なのでスキップ
+        if (dataUrl.length < 20000) {
+            return Promise.resolve(dataUrl);
+        }
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+                try {
+                    const nw = img.naturalWidth || img.width || 680;
+                    const nh = img.naturalHeight || img.height || 480;
+                    const scale = nw > maxW ? (maxW / nw) : 1;
+                    const w = Math.round(nw * scale);
+                    const h = Math.round(nh * scale);
+                    const canvas = document.createElement('canvas');
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext('2d');
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, w, h);
+                    ctx.drawImage(img, 0, 0, w, h);
+                    const result = canvas.toDataURL('image/jpeg', quality);
+                    resolve(result.length < dataUrl.length ? result : dataUrl);
+                } catch (_) {
+                    resolve(dataUrl);
+                }
+            };
+            img.onerror = () => resolve(dataUrl);
+            img.src = dataUrl;
+        });
+    }
+
+    // Play Diagram ページをJPEG画像としてレンダリング（スマホ画面幅に最適化：560px、高画質軽量0.38）
+    async function renderPageToJpeg(page, targetWidth = 560) {
         const unscaled = page.getViewport({ scale: 1 });
         // 余白が大きいPDFでもトリミング後にくっきり見えるよう少し高めの解像度で描画してから正規化
-        const renderWidth = Math.max(targetWidth, 960);
+        const renderWidth = Math.max(targetWidth, 840);
         const scale = renderWidth / unscaled.width;
         const viewport = page.getViewport({ scale });
 
@@ -424,34 +522,39 @@
 
         await page.render({ canvasContext: ctx, viewport }).promise;
         const normalized = normalizeDiagramCanvas(canvas, targetWidth);
-        return normalized.toDataURL('image/jpeg', 0.48);
+        return normalized.toDataURL('image/jpeg', 0.38);
     }
 
-    // 既に取り込み済みの図面データの余白統一・軽量化を書き出し時に自動実行する
+    // 既に取り込み済みの図面データおよびCadence写真の余白統一・軽量化を書き出し時に自動実行する（確実に25MB以下に抑制）
     async function compressExistingDiagrams(onProgress) {
         const current = getExtraData();
-        const list = current.playDiagrams;
-        if (!Array.isArray(list) || list.length === 0) return current;
-
+        const list = current.playDiagrams || [];
         let changed = false;
+
+        // 1. 図面（Play Diagram）の強力な軽量化（スマホ画面幅390pxに最適：560px / 0.38）
         const nextList = [];
+        const targetW = 560;
+        const targetQ = 0.38;
         for (let i = 0; i < list.length; i++) {
             const item = list[i];
-            if (item && item.image && (!item.cropNormalized || item.image.length > 26000)) {
-                if (typeof onProgress === 'function') onProgress(i + 1, list.length);
+            // 13KB超の画像はすべて最適サイズに再軽量化
+            if (item && item.image && (!item.cropNormalized || item.image.length > 13000)) {
+                if (typeof onProgress === 'function') {
+                    onProgress(i + 1, list.length, '図面を軽量化中');
+                }
                 try {
                     const compressed = await new Promise((resolve) => {
                         const img = new Image();
                         img.onload = () => {
                             const canvas = document.createElement('canvas');
-                            canvas.width = img.naturalWidth || img.width || 680;
-                            canvas.height = img.naturalHeight || img.height || 480;
+                            canvas.width = img.naturalWidth || img.width || targetW;
+                            canvas.height = img.naturalHeight || img.height || 420;
                             const ctx = canvas.getContext('2d');
                             ctx.fillStyle = '#ffffff';
                             ctx.fillRect(0, 0, canvas.width, canvas.height);
                             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                            const normalized = normalizeDiagramCanvas(canvas, 680);
-                            resolve(normalized.toDataURL('image/jpeg', 0.48));
+                            const normalized = normalizeDiagramCanvas(canvas, targetW);
+                            resolve(normalized.toDataURL('image/jpeg', targetQ));
                         };
                         img.onerror = () => resolve(item.image);
                         img.src = item.image;
@@ -465,8 +568,47 @@
             }
             nextList.push(item);
         }
+
+        // 2. Cadence写真の軽量化と二重保持データの完全削除
+        const photoCache = new Map();
+        async function getCompressedPhoto(url) {
+            if (!url || typeof url !== 'string' || !url.startsWith('data:image')) return url;
+            if (photoCache.has(url)) return photoCache.get(url);
+            const comp = await compressPhoto(url, 680, 0.50);
+            photoCache.set(url, comp);
+            if (comp !== url) changed = true;
+            return comp;
+        }
+
+        let nextCadence = current.cadence ? clone(current.cadence) : null;
+        let nextCadencePages = Array.isArray(current.cadencePages) ? clone(current.cadencePages) : [];
+
+        // 二重保存（cadence.pages や cadence.images）を削除して容量を大幅節約
+        if (nextCadence) {
+            if (nextCadence.pages) { delete nextCadence.pages; changed = true; }
+            if (nextCadence.images) { delete nextCadence.images; changed = true; }
+            if (nextCadence.image) {
+                nextCadence.image = await getCompressedPhoto(nextCadence.image);
+            }
+        }
+
+        for (let p = 0; p < nextCadencePages.length; p++) {
+            const cp = nextCadencePages[p];
+            if (typeof onProgress === 'function') {
+                onProgress(p + 1, nextCadencePages.length, 'Cadence写真を軽量化中');
+            }
+            if (cp.image) cp.image = await getCompressedPhoto(cp.image);
+            if (Array.isArray(cp.images)) {
+                cp.images = await Promise.all(cp.images.map(img => getCompressedPhoto(img)));
+            }
+        }
+
         if (changed) {
-            return saveExtraData({ playDiagrams: nextList });
+            return saveExtraData({
+                playDiagrams: nextList,
+                cadence: nextCadence || current.cadence,
+                cadencePages: nextCadencePages.length ? nextCadencePages : current.cadencePages
+            });
         }
         return current;
     }
@@ -573,6 +715,7 @@
 
         const result = {};
         const playDiagrams = [];
+        const cadencePages = [];
 
         for (let p = 1; p <= pdf.numPages; p++) {
             if (typeof onProgress === 'function') {
@@ -597,6 +740,29 @@
                     result.memberList = result.memberList || clone(getExtraData().memberList);
                     result.memberList.offRows = offRows;
                 }
+                // PDF内の背番号色（赤 vs 青）を自動検出
+                try {
+                    const opList = await page.getOperatorList();
+                    let redCount = 0;
+                    let blueCount = 0;
+                    for (let i = 0; i < opList.fnArray.length; i++) {
+                        const fn = opList.fnArray[i];
+                        const args = opList.argsArray[i];
+                        if ((fn === pdfjsLib.OPS.setFillRGBColor || fn === pdfjsLib.OPS.setFillColorN) && args && args.length >= 3) {
+                            const r = args[0] <= 1 ? args[0] : args[0] / 255;
+                            const g = args[1] <= 1 ? args[1] : args[1] / 255;
+                            const b = args[2] <= 1 ? args[2] : args[2] / 255;
+                            if (r > 0.6 && g < 0.25 && b < 0.25) redCount++;
+                            if (b > 0.6 && r < 0.25 && g < 0.35) blueCount++;
+                        }
+                    }
+                    result.memberList = result.memberList || clone(getExtraData().memberList);
+                    if (redCount > blueCount && redCount >= 3) {
+                        result.memberList.numColor = '#c00000';
+                    } else if (blueCount > redCount && blueCount >= 3) {
+                        result.memberList.numColor = '#0432ff';
+                    }
+                } catch (_) {}
             }
 
             // 3. 4th Down Member List ページ
@@ -610,61 +776,205 @@
                 if (pcRows.length) result.memberList.pcMembers = pcRows.reduce((a, b) => a.concat(b), []);
             }
 
-            // 4. Cadence 詳細ページ（見出しだけでなく本文があるページ）
-            if (/Cadence/i.test(fullText) && tokens.length >= 6) {
-                // ヘッダー（top < 65）とフッター（top > 560）を除外
-                const bodyTokens = tokens.filter(t => t.top >= 65 && t.top <= 560);
-                // Y座標順に並べる
-                bodyTokens.sort((a, b) => (Math.abs(a.top - b.top) < 5 ? a.x - b.x : a.top - b.top));
-                const lines = [];
-                for (const bt of bodyTokens) {
-                    const last = lines[lines.length - 1];
-                    if (last && Math.abs(last.top - bt.top) < 5) {
-                        last.text += bt.text;
-                        last.fontSize = Math.max(last.fontSize, bt.fontSize);
+            // 4. Cadence ページ判定：ページの左上に「Cadence」と書いてあるページは全て反映
+            // （top < 70 && x < 220 && /^Cadence/i.test(t.text)）
+            const cadenceHeaderTok = tokens.find(t => t.top < 70 && t.x < 220 && /^Cadence/i.test(t.text));
+            if (cadenceHeaderTok && tokens.length >= 4) {
+                // PDFの文字描画色（赤・青・黒等）を高精度にサンプリングするため倍率2でCanvasにレンダリング
+                const renderScale = 2;
+                const cadViewport = page.getViewport({ scale: renderScale });
+                const cadCanvas = document.createElement('canvas');
+                cadCanvas.width = Math.round(cadViewport.width);
+                cadCanvas.height = Math.round(cadViewport.height);
+                const cadCtx = cadCanvas.getContext('2d', { willReadFrequently: true });
+                cadCtx.fillStyle = '#ffffff';
+                cadCtx.fillRect(0, 0, cadCanvas.width, cadCanvas.height);
+                await page.render({ canvasContext: cadCtx, viewport: cadViewport }).promise;
+
+                // 各テキストアイテムの座標と実際の描画色を抽出
+                const coloredTokens = [];
+                for (const it of tc.items) {
+                    const str = String(it.str || '');
+                    if (!str.trim()) continue;
+                    const unscaledTx = it.transform[4];
+                    const unscaledTy = it.transform[5];
+                    const unscaledTop = viewport.height - unscaledTy;
+                    // ヘッダー（top < 65）とフッター（top > 560）を除外
+                    if (unscaledTop < 65 || unscaledTop > 560) continue;
+                    const unscaledFontSize = Math.hypot(it.transform[0], it.transform[1]) || Math.abs(it.height) || 12;
+                    const unscaledWidth = it.width || (str.length * unscaledFontSize * 0.55);
+
+                    // Canvas（2倍スケール）上の座標
+                    const tx = unscaledTx * renderScale;
+                    const top = unscaledTop * renderScale;
+                    const fontSize = unscaledFontSize * renderScale;
+                    const width = unscaledWidth * renderScale;
+
+                    // 描画バウンディングボックスのピクセルから色を判定
+                    let color = 'black';
+                    try {
+                        const sx = Math.max(0, Math.min(cadCanvas.width - 2, Math.round(tx)));
+                        const sy = Math.max(0, Math.min(cadCanvas.height - 2, Math.round(top - fontSize * 0.9)));
+                        const sw = Math.max(2, Math.min(cadCanvas.width - sx, Math.round(width)));
+                        const sh = Math.max(2, Math.min(cadCanvas.height - sy, Math.round(fontSize * 1.15)));
+                        const imgData = cadCtx.getImageData(sx, sy, sw, sh).data;
+
+                        let redCount = 0;
+                        let blueCount = 0;
+                        let darkPixels = 0;
+
+                        for (let i = 0; i < imgData.length; i += 4) {
+                            const r = imgData[i], g = imgData[i+1], b = imgData[i+2], a = imgData[i+3];
+                            // 白背景を除外
+                            if (a > 80 && (r < 235 || g < 235 || b < 235)) {
+                                darkPixels++;
+                                // 赤系（PowerPoint標準赤 rgb(255,0,0) や クリムゾン等）
+                                if (r > 130 && (r - g) > 35 && (r - b) > 35) {
+                                    redCount++;
+                                }
+                                // 青系
+                                else if (b > 130 && (b - r) > 35) {
+                                    blueCount++;
+                                }
+                            }
+                        }
+
+                        if (darkPixels >= 3) {
+                            if (redCount >= 4 || (redCount / darkPixels) > 0.15) {
+                                color = 'red';
+                            } else if (blueCount >= 4 || (blueCount / darkPixels) > 0.15) {
+                                color = 'blue';
+                            }
+                        }
+                    } catch (_) {}
+
+                    coloredTokens.push({
+                        str,
+                        x: unscaledTx,
+                        top: unscaledTop,
+                        width: unscaledWidth,
+                        fontSize: unscaledFontSize,
+                        color
+                    });
+                }
+
+                // Y座標で同じ行（差が5pt以内）にグループ化
+                coloredTokens.sort((a, b) => (Math.abs(a.top - b.top) < 5 ? a.x - b.x : a.top - b.top));
+                const lineGroups = [];
+                for (const tok of coloredTokens) {
+                    const lastGroup = lineGroups[lineGroups.length - 1];
+                    if (lastGroup && Math.abs(lastGroup.top - tok.top) < 5) {
+                        lastGroup.tokens.push(tok);
+                        lastGroup.fontSize = Math.max(lastGroup.fontSize, tok.fontSize);
                     } else {
-                        lines.push({ top: bt.top, text: bt.text, fontSize: bt.fontSize });
+                        lineGroups.push({ top: tok.top, fontSize: tok.fontSize, tokens: [tok] });
                     }
                 }
-                if (lines.length >= 2) {
-                    const headline = lines[0].text;
-                    const items = [];
-                    let cur = null;
-                    let prevTop = lines[0].top;
-                    for (let i = 1; i < lines.length; i++) {
-                        const ln = lines[i];
-                        if (/^[■◼▪●・]/.test(ln.text)) {
-                            cur = { heading: ln.text, bodyLines: [] };
-                            items.push(cur);
+
+                // 各行ごとに色（赤・青・黒）をまとめてタグ化
+                const lines = [];
+                for (const grp of lineGroups) {
+                    grp.tokens.sort((a, b) => a.x - b.x);
+
+                    // 同じ色の連続するトークンをまとめる
+                    const runs = [];
+                    let curRun = null;
+                    for (let i = 0; i < grp.tokens.length; i++) {
+                        const t = grp.tokens[i];
+                        let addSpace = false;
+                        if (i > 0) {
+                            const prev = grp.tokens[i - 1];
+                            const gap = t.x - (prev.x + prev.width);
+                            if (gap > t.fontSize * 0.25) {
+                                addSpace = true;
+                            }
+                        }
+
+                        if (!curRun || curRun.color !== t.color) {
+                            curRun = { color: t.color, text: (addSpace ? ' ' : '') + t.str };
+                            runs.push(curRun);
                         } else {
-                            if (!cur) {
+                            curRun.text += (addSpace && !curRun.text.endsWith(' ') && !t.str.startsWith(' ') ? ' ' : '') + t.str;
+                        }
+                    }
+
+                    let lineStr = '';
+                    let plainStr = '';
+                    for (const run of runs) {
+                        plainStr += run.text;
+                        const trimmed = run.text.trim();
+                        if (!trimmed) {
+                            lineStr += run.text;
+                        } else {
+                            const lead = run.text.match(/^\s*/)[0];
+                            const trail = run.text.match(/\s*$/)[0];
+                            if (run.color === 'red') {
+                                lineStr += `${lead}{red:${trimmed}}${trail}`;
+                            } else if (run.color === 'blue') {
+                                lineStr += `${lead}{blue:${trimmed}}${trail}`;
+                            } else {
+                                lineStr += run.text;
+                            }
+                        }
+                    }
+                    lines.push({ top: grp.top, text: lineStr.trim(), plain: plainStr.trim(), fontSize: grp.fontSize });
+                }
+
+                let headline = '';
+                const items = [];
+                let cur = null;
+                let prevTop = 0;
+                for (let i = 0; i < lines.length; i++) {
+                    const ln = lines[i];
+                    if (/^[■◼▪●・【]/.test(ln.plain)) {
+                        cur = { heading: ln.text, bodyLines: [] };
+                        items.push(cur);
+                    } else {
+                        if (!cur) {
+                            if (!headline) {
+                                headline = ln.text;
+                            } else {
                                 cur = { heading: '■概要', bodyLines: [] };
                                 items.push(cur);
                             }
+                        }
+                        if (cur) {
                             if (cur.bodyLines.length > 0 && (ln.top - prevTop) > 26) {
                                 cur.bodyLines.push('');
                             }
-                            // カギカッコ内の英単語（Hut等）を青字、N回を赤字に自動装飾
-                            const decorated = ln.text
-                                .replace(/「([A-Za-z0-9\s]+)」/g, '「{blue:$1}」')
-                                .replace(/(\d+回)/g, '{red:$1}');
-                            cur.bodyLines.push(decorated);
+                            cur.bodyLines.push(ln.text);
                         }
-                        prevTop = ln.top;
                     }
-                    result.cadence = {
-                        pageTitle: 'Cadence',
-                        headline: headline,
-                        items: items.map(it => ({ heading: it.heading, body: it.bodyLines.join('\n') })),
-                        image: (getExtraData().cadence || {}).image || ''
-                    };
+                    prevTop = ln.top;
                 }
+
+                // このページに画像描画オペレーションがあるか判定
+                let pageImages = [];
+                try {
+                    const opList = await page.getOperatorList();
+                    const hasImg = opList.fnArray.some(fn =>
+                        fn === pdfjsLib.OPS.paintImageXObject || fn === pdfjsLib.OPS.paintJpegXObject
+                    );
+                    if (hasImg && jpegs && jpegs.length) {
+                        const fieldPhotos = jpegs.filter(j => j.width > 300 && j.width > j.height * 1.15);
+                        pageImages = await Promise.all(fieldPhotos.map(j => compressPhoto(j.dataUrl, 800, 0.62)));
+                    }
+                } catch (_) {}
+
+                cadencePages.push({
+                    page: p,
+                    pageTitle: 'Cadence',
+                    headline: headline || '',
+                    items: items.map(it => ({ heading: it.heading, body: it.bodyLines.join('\n') })),
+                    images: pageImages,
+                    image: pageImages[0] || ''
+                });
             }
 
             // 5. Play Diagram（プレー図面）ページ
             const pdMeta = extractPlayDiagramMeta(tokens);
             if (pdMeta) {
-                const image = await renderPageToJpeg(page, 680);
+                const image = await renderPageToJpeg(page, 640);
                 playDiagrams.push({
                     page: p,
                     sourcePdf: file.name,
@@ -675,12 +985,24 @@
             }
         }
 
-        // Cadence用の埋め込み写真（横長で最も大きいJPEG）があればセット
-        const fieldPhotos = jpegs.filter(j => j.width > 300 && j.width > j.height * 1.15);
-        if (fieldPhotos.length) {
-            const best = fieldPhotos[fieldPhotos.length - 1];
-            result.cadence = result.cadence || clone(getExtraData().cadence);
-            result.cadence.image = best.dataUrl;
+        // Cadence ページ情報の集約（全ページ分を保存、二重保持を避けて軽量化）
+        if (cadencePages.length > 0) {
+            result.cadencePages = cadencePages;
+            const bestPhoto = cadencePages[0]?.images?.[0] || cadencePages[0]?.image || '';
+            result.cadence = {
+                pageTitle: 'Cadence',
+                headline: cadencePages[0].headline,
+                items: cadencePages[0].items,
+                image: bestPhoto
+            };
+        } else {
+            // Cadence用の埋め込み写真（横長で最も大きいJPEG）があればセット
+            const fieldPhotos = jpegs.filter(j => j.width > 300 && j.width > j.height * 1.15);
+            if (fieldPhotos.length) {
+                const best = fieldPhotos[fieldPhotos.length - 1];
+                result.cadence = result.cadence || clone(getExtraData().cadence);
+                result.cadence.image = await compressPhoto(best.dataUrl, 680, 0.50);
+            }
         }
 
         if (playDiagrams.length > 0) {

@@ -306,11 +306,26 @@ async function exportAppData() {
     if (!password) return;
     const prevStatus = uploadStatus ? uploadStatus.textContent : '';
     if (window.TBScoutingExtra && window.TBScoutingExtra.compressExistingDiagrams) {
-        extraObj = await window.TBScoutingExtra.compressExistingDiagrams((cur, total) => {
-            if (uploadStatus) uploadStatus.textContent = `スマホ高速表示用に図面を軽量化中... (${cur}/${total})`;
+        extraObj = await window.TBScoutingExtra.compressExistingDiagrams((cur, total, phase) => {
+            if (uploadStatus) uploadStatus.textContent = phase
+                ? `スマホ高速表示用に${phase}... (${cur}/${total})`
+                : `スマホ高速表示用に図面・写真を軽量化中... (${cur}/${total})`;
         });
     }
     if (uploadStatus) uploadStatus.textContent = 'データを暗号化して書き出し中...';
+
+    // 二重保持データの完全クリーンアップ（容量削減）
+    let cleanExtra = extraObj;
+    if (cleanExtra) {
+        try {
+            cleanExtra = JSON.parse(JSON.stringify(cleanExtra));
+            if (cleanExtra.cadence) {
+                delete cleanExtra.cadence.pages;
+                delete cleanExtra.cadence.images;
+            }
+        } catch (_) {}
+    }
+
     const payload = {
         version: 1,
         exportedAt: new Date().toISOString(),
@@ -321,7 +336,7 @@ async function exportAppData() {
         // Down & Distance 画面のヤード設定（未設定なら初期値のまま）
         ddSettings: (window.TBShared && window.TBShared.loadDdSettings()) || null,
         // Member List / Cadence / Play Diagram のデータ
-        scoutingExtra: extraObj
+        scoutingExtra: cleanExtra
     };
     // パスワードで暗号化してから書き出す
     const encrypted = await window.TBSecure.encrypt(payload, password);
