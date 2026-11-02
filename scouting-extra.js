@@ -632,25 +632,67 @@
         if (rawParts.length < 3) return null;
 
         let gamePlay = rawParts[0] || '';
-        let downDist = rawParts[1] || '';
-        let formation = rawParts[2] || '';
-        let playName = rawParts.slice(3).join(' / ').trim() || '';
+        let downDist = '';
+        let hash = '';
+        let personnel = '';
+        let formation = '';
+        let playName = '';
 
-        if (rawParts.length === 3) {
-            if (/^[1-4]\s*[-–]/.test(rawParts[1])) {
-                downDist = rawParts[1];
-                formation = rawParts[2];
+        const parts = rawParts.slice(1);
+
+        // 新フォーマット：学校名 YYMMDD vs 対戦校 #N / D&D / Hash / Personnel / フォーメーション / Play名
+        // 例：KG 261031 vs Kandai #1 / 1-10 / L / 12 / UNB / MOON IZ(FB) (6分割以上)
+        if (parts.length >= 5) {
+            downDist = parts[0] || '';
+            hash = parts[1] || '';
+            personnel = parts[2] || '';
+            formation = parts[3] || '';
+            playName = parts.slice(4).join(' / ').trim();
+        } else if (parts.length === 4) {
+            // 5パーツ（4要素）：Hash または Personnel がある場合、または旧フォーマットの末尾スラッシュ
+            downDist = parts[0] || '';
+            const isHash1 = /^(L|R|M|LM|RM|LT|RT|HASH|LEFT|RIGHT)$/i.test(parts[1]);
+            const isPers1 = /^\d{2}[A-Za-z]?$/.test(parts[1]);
+            const isPers2 = /^\d{2}[A-Za-z]?$/.test(parts[2]);
+
+            if (isHash1 && isPers2) {
+                hash = parts[1];
+                personnel = parts[2];
+                formation = parts[3];
                 playName = '';
+            } else if (isHash1) {
+                hash = parts[1];
+                formation = parts[2];
+                playName = parts[3];
+            } else if (isPers1) {
+                personnel = parts[1];
+                formation = parts[2];
+                playName = parts[3];
             } else {
-                formation = rawParts[1];
-                playName = rawParts[2];
-                downDist = '';
+                // 従来の旧フォーマット：D&D / Formation / Play名 / その他
+                formation = parts[1];
+                playName = parts.slice(2).join(' / ').trim();
+            }
+        } else if (parts.length === 3) {
+            // 旧フォーマット標準：Game #N / D&D / Formation / Play名
+            downDist = parts[0] || '';
+            formation = parts[1] || '';
+            playName = parts[2] || '';
+        } else if (parts.length === 2) {
+            if (/^[1-4]\s*[-–]/.test(parts[0])) {
+                downDist = parts[0];
+                formation = parts[1];
+            } else {
+                formation = parts[0];
+                playName = parts[1];
             }
         }
 
         // 表記揺れの正規化（例: "3 STEP" -> "3STEP"）
         playName = playName.replace(/\b([1235])\s+STEP\b/gi, '$1STEP').replace(/\s+/g, ' ').trim();
         formation = formation.replace(/\s+/g, ' ').trim();
+        personnel = personnel.replace(/\s+/g, '').trim();
+        hash = hash.replace(/\s+/g, '').toUpperCase();
 
         const playNumMatch = gamePlay.match(/#(\d+)/);
         const playNum = playNumMatch ? parseInt(playNumMatch[1], 10) : 0;
@@ -696,6 +738,8 @@
             downDist,
             down,
             distance,
+            hash,
+            personnel,
             formation,
             playName,
             notes: cleanNotes

@@ -198,6 +198,24 @@ body {
     padding: 2px 6px;
     border-radius: 5px;
 }
+.badge-personnel {
+    background: #ede9fe;
+    color: #6d28d9;
+    font-size: 0.72rem;
+    font-weight: 800;
+    padding: 2px 6px;
+    border-radius: 5px;
+    border: 1px solid #ddd6fe;
+}
+.badge-hash {
+    background: #f1f5f9;
+    color: #475569;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 2px 5px;
+    border-radius: 5px;
+    border: 1px solid #e2e8f0;
+}
 .play-title-main {
     font-size: 0.92rem;
     font-weight: 800;
@@ -372,8 +390,8 @@ body {
                     </select>
                 </div>
                 <div class="filter-group">
-                    <label class="filter-label" for="filter-play">Play名</label>
-                    <select id="filter-play" class="filter-select">
+                    <label class="filter-label" for="filter-personnel">Personnel</label>
+                    <select id="filter-personnel" class="filter-select">
                         <option value="ALL">すべて (ALL)</option>
                     </select>
                 </div>
@@ -391,6 +409,12 @@ body {
                         <option value="2">2nd Down</option>
                         <option value="3">3rd Down</option>
                         <option value="4">4th Down</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label class="filter-label" for="filter-play">Play名</label>
+                    <select id="filter-play" class="filter-select">
+                        <option value="ALL">すべて (ALL)</option>
                     </select>
                 </div>
             </div>
@@ -422,6 +446,7 @@ body {
     <script>
 (function () {
     const filterGame = document.getElementById('filter-game');
+    const filterPersonnel = document.getElementById('filter-personnel');
     const filterPlay = document.getElementById('filter-play');
     const filterFormation = document.getElementById('filter-formation');
     const filterDown = document.getElementById('filter-down');
@@ -450,12 +475,16 @@ body {
 
     function populateFilterOptions() {
         const gameCounts = {};
+        const personnelCounts = {};
         const playCounts = {};
         const formationCounts = {};
 
         allDiagrams.forEach(d => {
             const g = (d.gameName || '').trim();
             if (g) gameCounts[g] = (gameCounts[g] || 0) + 1;
+
+            const pers = (d.personnel || '').trim();
+            if (pers) personnelCounts[pers] = (personnelCounts[pers] || 0) + 1;
 
             const p = (d.playName || '').trim();
             if (p) playCounts[p] = (playCounts[p] || 0) + 1;
@@ -474,6 +503,19 @@ body {
             filterGame.appendChild(opt);
         });
         if (gameCounts[prevGameVal]) filterGame.value = prevGameVal;
+
+        // Personnelの選択肢
+        const prevPersVal = filterPersonnel ? filterPersonnel.value : 'ALL';
+        if (filterPersonnel) {
+            filterPersonnel.innerHTML = '<option value="ALL">すべて (ALL)</option>';
+            Object.keys(personnelCounts).sort().forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p;
+                opt.textContent = `${p} (${personnelCounts[p]})`;
+                filterPersonnel.appendChild(opt);
+            });
+            if (personnelCounts[prevPersVal]) filterPersonnel.value = prevPersVal;
+        }
 
         const prevPlayVal = filterPlay.value;
         filterPlay.innerHTML = '<option value="ALL">すべて (ALL)</option>';
@@ -499,12 +541,14 @@ body {
     // 絞り込み実行（初期表示はインポート順のまま！）
     function applyFilters() {
         const selGame = filterGame.value;
+        const selPersonnel = filterPersonnel ? filterPersonnel.value : 'ALL';
         const selPlay = filterPlay.value;
         const selForm = filterFormation.value;
         const selDown = filterDown.value;
 
         filteredDiagrams = allDiagrams.filter(d => {
             if (selGame !== 'ALL' && d.gameName !== selGame) return false;
+            if (selPersonnel !== 'ALL' && d.personnel !== selPersonnel) return false;
             if (selPlay !== 'ALL' && d.playName !== selPlay) return false;
             if (selForm !== 'ALL' && d.formation !== selForm) return false;
             if (selDown !== 'ALL' && String(d.down) !== String(selDown)) return false;
@@ -635,7 +679,7 @@ body {
     }
 
     function estimateCardHeight(d) {
-        const badgeChars = (d.gameName || '').length + String(d.playNum || d.page || '').length + (d.downDist || '').length + (d.formation || '').length + 10;
+        const badgeChars = (d.gameName || '').length + String(d.playNum || d.page || '').length + (d.downDist || '').length + (d.personnel || '').length + (d.hash || '').length + (d.formation || '').length + 12;
         const titleChars = (d.playName || 'PLAY').length;
         const totalLinePx = badgeChars * 7.5 + titleChars * 9.5 + 36;
         const availW = Math.max(200, vsColWidth - 24);
@@ -737,6 +781,8 @@ body {
         const gameBadge = d.gameName ? `<span class="badge-game">${esc(d.gameName)}</span>` : '';
         const numText = d.playNum ? `#${d.playNum}` : (d.page ? `P.${d.page}` : '');
         const ddText = d.downDist || '';
+        const hashText = d.hash ? `<span class="badge-hash">${esc(d.hash)}</span>` : '';
+        const personnelText = d.personnel ? `<span class="badge-personnel">P:${esc(d.personnel)}</span>` : '';
         const formText = d.formation || '';
         const playText = d.playName || 'PLAY';
         const notesText = d.notes ? `<span class="notes-tag">💬 ${esc(d.notes)}</span>` : '';
@@ -747,6 +793,8 @@ body {
                     ${gameBadge}
                     ${numText ? `<span class="badge-num">${esc(numText)}</span>` : ''}
                     ${ddText ? `<span class="badge-dd">${esc(ddText)}</span>` : ''}
+                    ${hashText}
+                    ${personnelText}
                     ${formText ? `<span class="badge-form">${esc(formText)}</span>` : ''}
                 </div>
                 <div class="play-title-main">${esc(playText)}</div>
@@ -950,6 +998,8 @@ body {
             ${d.gameName ? `<span style="color:#6ee7b7;font-size:0.8rem;">[${esc(d.gameName)}]</span>` : ''}
             <span style="color:#60a5fa;font-weight:800;">${esc(numText)}</span>
             ${d.downDist ? `<span style="color:#f87171;">${esc(d.downDist)}</span>` : ''}
+            ${d.hash ? `<span style="color:#94a3b8;font-size:0.85rem;font-weight:700;">${esc(d.hash)}</span>` : ''}
+            ${d.personnel ? `<span style="background:#4c1d95;color:#ddd6fe;font-size:0.75rem;padding:2px 6px;border-radius:4px;font-weight:800;">P:${esc(d.personnel)}</span>` : ''}
             ${d.formation ? `<span style="color:#cbd5e1;">${esc(d.formation)}</span>` : ''}
             <span style="color:#fff;font-size:1.05rem;font-weight:800;">${esc(d.playName)}</span>
         `;
@@ -977,11 +1027,13 @@ body {
     }
 
     filterGame.addEventListener('change', applyFilters);
+    if (filterPersonnel) filterPersonnel.addEventListener('change', applyFilters);
     filterPlay.addEventListener('change', applyFilters);
     filterFormation.addEventListener('change', applyFilters);
     filterDown.addEventListener('change', applyFilters);
     resetFilterBtn.addEventListener('click', () => {
         filterGame.value = 'ALL';
+        if (filterPersonnel) filterPersonnel.value = 'ALL';
         filterPlay.value = 'ALL';
         filterFormation.value = 'ALL';
         filterDown.value = 'ALL';
