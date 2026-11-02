@@ -854,10 +854,15 @@ body {
         try {
             const parts = d.image.split(',');
             const b64 = parts.length > 1 ? parts[1] : parts[0];
-            const bin = atob(b64);
-            const len = bin.length;
-            const bytes = new Uint8Array(len);
-            for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+            let bytes;
+            if (typeof Uint8Array.fromBase64 === 'function') {
+                bytes = Uint8Array.fromBase64(b64);
+            } else {
+                const bin = atob(b64);
+                const len = bin.length;
+                bytes = new Uint8Array(len);
+                for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+            }
             d._blob = new Blob([bytes], { type: 'image/jpeg' });
             // 部員用(Viewer)では書き出し不要なため、UTF-16の巨大なBase64文字列をヒープから即破棄
             d.image = null;
@@ -1093,19 +1098,21 @@ body {
             img.alt = playText;
             img.decoding = 'async';
 
-            img.onload = () => {
-                if (!mountedCards.has(idx)) return;
-                normalizeDiagramImageIfNeeded(img, d, newBlob => {
-                    if (!mountedCards.has(idx) || !entry.img) return;
-                    if (entry.objUrl) {
-                        try { URL.revokeObjectURL(entry.objUrl); } catch (_) {}
-                    }
-                    const newUrl = URL.createObjectURL(newBlob);
-                    entry.objUrl = newUrl;
-                    entry.img.onload = null;
-                    entry.img.src = newUrl;
-                });
-            };
+            if (!d.cropNormalized && !d._cropChecked) {
+                img.onload = () => {
+                    if (!mountedCards.has(idx)) return;
+                    normalizeDiagramImageIfNeeded(img, d, newBlob => {
+                        if (!mountedCards.has(idx) || !entry.img) return;
+                        if (entry.objUrl) {
+                            try { URL.revokeObjectURL(entry.objUrl); } catch (_) {}
+                        }
+                        const newUrl = URL.createObjectURL(newBlob);
+                        entry.objUrl = newUrl;
+                        entry.img.onload = null;
+                        entry.img.src = newUrl;
+                    });
+                };
+            }
 
             const blob = getDiagramBlob(d);
             if (blob) {

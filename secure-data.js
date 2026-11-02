@@ -3,8 +3,9 @@
 // 閲覧アプリ：暗号化された data.json をパスワードで復号して表示する
 // 暗号化：PBKDF2-SHA256（ランダムなsalt）で鍵を作り、AES-GCM（ランダムなIV）で暗号化
 (function () {
-    const ITERATIONS = 310000;
+    const ITERATIONS = 100000;
     const PASS_KEY = 'tb-viewer-pass'; // 「この端末に保存」したときのみ使用
+    const CHECK_TS_KEY = 'tb-last-head-check';
 
     // ---------- 暗号化・復号 ----------
     function toB64(bytes) {
@@ -13,10 +14,24 @@
         return btoa(bin);
     }
     function fromB64(b64) {
+        if (typeof Uint8Array.fromBase64 === 'function') {
+            try { return Uint8Array.fromBase64(b64); } catch (_) {}
+        }
         const bin = atob(b64);
         const bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         return bytes;
+    }
+    async function fromB64Async(b64) {
+        if (typeof Uint8Array.fromBase64 === 'function') {
+            try { return Uint8Array.fromBase64(b64); } catch (_) {}
+        }
+        try {
+            const res = await fetch('data:application/octet-stream;base64,' + b64);
+            return new Uint8Array(await res.arrayBuffer());
+        } catch (_) {
+            return fromB64(b64);
+        }
     }
     async function deriveKey(password, salt, iterations) {
         const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
@@ -33,8 +48,11 @@
         return { version: 2, enc: true, salt: toB64(salt), iv: toB64(iv), iterations: ITERATIONS, ciphertext: toB64(ct) };
     }
     async function decrypt(env, password) {
-        const key = await deriveKey(password, fromB64(env.salt), env.iterations);
-        const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(env.iv) }, key, fromB64(env.ciphertext));
+        const [key, ctBytes] = await Promise.all([
+            deriveKey(password, fromB64(env.salt), env.iterations),
+            fromB64Async(env.ciphertext)
+        ]);
+        const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(env.iv) }, key, ctBytes);
         return JSON.parse(new TextDecoder().decode(plain));
     }
     function cryptoAvailable() {
@@ -177,81 +195,142 @@
         location.reload();
     }
 
-    let published = null;
-    async function getPublished() {
-        if (published) return published;
+    function extractSig(headers) {
+        if (!headers) return '';
+        const etag = (headers.get('etag') || '').replace(/^W\//i, '').replace(/"/g, '').trim();
+        const lm = (headers.get('last-modified') || '').trim();
+        return (etag || lm) ? `${etag}|${lm}` : '';
+    }
 
-        const isPlayPage = /play\.html/i.test(location.pathname);
-        const saved = getSaved();
-
-        // パスワード保存済みなら、HEADリクエストでdata.jsonの更新有無だけ確認し、未更新ならIndexedDBから瞬時に復元
-        let remoteSig = '';
-        if (saved) {
-            try {
-                const headRes = await fetch('data.json', { method: 'HEAD', cache: 'no-cache' });
-                if (headRes.ok) {
-                    remoteSig = (headRes.headers.get('etag') || '') + '|' + (headRes.headers.get('last-modified') || '') + '|' + (headRes.headers.get('content-length') || '');
-                }
-                if (remoteSig && remoteSig !== '||') {
-                    const cachedMeta = await cacheGet('meta');
-                    if (cachedMeta && cachedMeta.sig === remoteSig) {
-                        const light = await cacheGet('light');
-                        if (light) {
-                            if (isPlayPage) {
-                                const diagrams = await cacheGet('diagrams');
-                                if (light.scoutingExtra && Array.isArray(diagrams)) {
-                                    light.scoutingExtra.playDiagrams = diagrams;
-                                }
-                            }
-                            published = light;
-                            published.__encrypted = true;
-                            addLogoutButton();
-                            return published;
-                        }
-                    }
-                }
-            } catch (_) {}
-        }
-
-        const res = await fetch('data.json', { cache: 'no-cache' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        if (!remoteSig) {
-            remoteSig = (res.headers.get('etag') || '') + '|' + (res.headers.get('last-modified') || '') + '|' + (res.headers.get('content-length') || '');
-        }
-        const payload = await res.json();
-        if (!payload.enc) return (published = payload);
-        if (!cryptoAvailable()) throw new Error('この接続では暗号を解除できません（https で開いてください）。');
-
-        if (saved) {
-            try { published = await decrypt(payload, saved); savePass(saved, false); }
-            catch (e) { try { localStorage.removeItem(PASS_KEY); sessionStorage.removeItem(PASS_KEY); } catch (_) { } }
-        }
-        if (!published) {
-            await askPassword(async (pw, persist) => {
-                try { published = await decrypt(payload, pw); savePass(pw, persist); return true; }
-                catch (e) { return false; }
-            });
-        }
-        published.__encrypted = true;
-        addLogoutButton();
-
-        // 復号済みデータを「軽量本体（全画面用）」と「図面配列（Play Diagram専用）」に分けてIndexedDBにキャッシュ
+    async function saveToCache(fullData, sig) {
         try {
-            const diagrams = (published.scoutingExtra && Array.isArray(published.scoutingExtra.playDiagrams))
-                ? published.scoutingExtra.playDiagrams
+            const diagrams = (fullData.scoutingExtra && Array.isArray(fullData.scoutingExtra.playDiagrams))
+                ? fullData.scoutingExtra.playDiagrams
                 : [];
-            const lightCopy = Object.assign({}, published);
+            const lightCopy = Object.assign({}, fullData);
             if (lightCopy.scoutingExtra) {
-                lightCopy.scoutingExtra = Object.assign({}, lightCopy.scoutingExtra, { playDiagrams: [] });
+                lightCopy.scoutingExtra = Object.assign({}, fullData.scoutingExtra, { playDiagrams: [] });
             }
+            // 1. 軽量データ（集計・メンバー・ケイデンス）を最優先で保存完了させる（約10ms）
+            await cacheSet({
+                meta: {
+                    sig: sig || 'cached',
+                    exportedAt: fullData.exportedAt || '',
+                    hasDiagrams: diagrams.length > 0,
+                    savedAt: Date.now()
+                },
+                light: lightCopy
+            });
+            // 2. 図面配列は画面表示を待たせずに非同期トランザクションで保存
             cacheSet({
-                meta: { sig: remoteSig || String(payload.salt || ''), savedAt: Date.now() },
-                light: lightCopy,
                 diagrams: diagrams
             });
         } catch (_) {}
+    }
 
-        return published;
+    function checkUpdateInBackground(cachedMeta, savedPass) {
+        if (!savedPass || !cachedMeta) return;
+        try {
+            const lastCheck = parseInt(sessionStorage.getItem(CHECK_TS_KEY) || '0', 10);
+            if (Date.now() - lastCheck < 120000) return; // 2分以内は再チェック不要
+            sessionStorage.setItem(CHECK_TS_KEY, String(Date.now()));
+        } catch (_) {}
+
+        setTimeout(async () => {
+            try {
+                const headRes = await fetch('data.json', { method: 'HEAD', cache: 'no-cache' });
+                if (!headRes.ok) return;
+                const remoteSig = extractSig(headRes.headers);
+                if (!remoteSig || !cachedMeta.sig || cachedMeta.sig === 'cached' || remoteSig === cachedMeta.sig) {
+                    if (remoteSig && cachedMeta.sig === 'cached') {
+                        cachedMeta.sig = remoteSig;
+                        cacheSet({ meta: cachedMeta });
+                    }
+                    return;
+                }
+                // サーバー上の data.json が更新されている場合はバックグラウンドで取得・更新
+                const res = await fetch('data.json', { cache: 'no-cache' });
+                if (!res.ok) return;
+                const payload = await res.json();
+                const fresh = payload.enc ? await decrypt(payload, savedPass) : payload;
+                if (fresh) {
+                    await saveToCache(fresh, remoteSig);
+                    if (fresh.exportedAt && fresh.exportedAt !== cachedMeta.exportedAt) {
+                        location.reload();
+                    }
+                }
+            } catch (_) {}
+        }, 600);
+    }
+
+    let published = null;
+    let publishedPromise = null;
+
+    async function getPublished() {
+        if (published) return published;
+        if (publishedPromise) return publishedPromise;
+
+        publishedPromise = (async () => {
+            const isPlayPage = /play\.html/i.test(location.pathname);
+            const saved = getSaved();
+
+            // パスワード保存済みなら、通信を一切待たずにIndexedDBから即座（0.05秒）に復元
+            if (saved) {
+                try {
+                    const [cachedMeta, light] = await Promise.all([cacheGet('meta'), cacheGet('light')]);
+                    if (light) {
+                        let ready = true;
+                        if (isPlayPage && cachedMeta && cachedMeta.hasDiagrams) {
+                            const diagrams = await cacheGet('diagrams');
+                            if (Array.isArray(diagrams) && diagrams.length > 0) {
+                                if (light.scoutingExtra) light.scoutingExtra.playDiagrams = diagrams;
+                            } else {
+                                ready = false; // 図面キャッシュが未完了の場合のみ再取得へ
+                            }
+                        }
+                        if (ready) {
+                            published = light;
+                            published.__encrypted = true;
+                            addLogoutButton();
+                            checkUpdateInBackground(cachedMeta, saved);
+                            return published;
+                        }
+                    }
+                } catch (_) {}
+            }
+
+            const res = await fetch('data.json', { cache: 'no-cache' });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const remoteSig = extractSig(res.headers) || '';
+            const payload = await res.json();
+            if (!payload.enc) return (published = payload);
+            if (!cryptoAvailable()) throw new Error('この接続では暗号を解除できません（https で開いてください）。');
+
+            if (saved) {
+                try { published = await decrypt(payload, saved); savePass(saved, false); }
+                catch (e) { try { localStorage.removeItem(PASS_KEY); sessionStorage.removeItem(PASS_KEY); } catch (_) { } }
+            }
+            if (!published) {
+                await askPassword(async (pw, persist) => {
+                    try { published = await decrypt(payload, pw); savePass(pw, persist); return true; }
+                    catch (e) { return false; }
+                });
+            }
+            published.__encrypted = true;
+            addLogoutButton();
+
+            try { sessionStorage.setItem(CHECK_TS_KEY, String(Date.now())); } catch (_) {}
+            await saveToCache(published, remoteSig || String(payload.salt || ''));
+
+            return published;
+        })();
+
+        try {
+            return await publishedPromise;
+        } catch (err) {
+            publishedPromise = null;
+            throw err;
+        }
     }
 
     function addLogoutButton() {

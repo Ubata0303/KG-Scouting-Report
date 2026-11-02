@@ -35,11 +35,26 @@
         });
     }
 
-    function b64ToFile(f) {
-        const bin = atob(f.b64);
+    function b64ToBytes(b64) {
+        if (typeof Uint8Array.fromBase64 === 'function') {
+            try { return Uint8Array.fromBase64(b64); } catch (_) {}
+        }
+        const bin = atob(b64);
         const bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        return new File([bytes], f.name, { type: f.type || '' });
+        return bytes;
+    }
+
+    function bytesToB64(bytes) {
+        let bin = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+            bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        }
+        return btoa(bin);
+    }
+
+    function b64ToFile(f) {
+        return new File([b64ToBytes(f.b64)], f.name, { type: f.type || '' });
     }
 
     // ユーザーが選んだファイルを保存（Dashboardは追加、他の画面は置き換え）
@@ -54,8 +69,9 @@
         renderBanner();
     }
 
-    // 複数ファイルを1つのワークブックにまとめる（1ファイルしか読めない画面用）
+    // 複数ファイルを1つのワークブックにまとめる（1ファイルしか読めない画面用・合算結果キャッシュ対応）
     const HEADER_WORDS = ['PLAY TYPE', 'OFF FORM', 'PERSONNEL', 'HASH', 'ZONE', 'DN', 'DIST', 'OFF PLAY'];
+    const MERGED_CACHE_KEY = 'tb-merged-xlsx-cache';
     function findHeaderRow(rows) {
         for (let i = 0; i < Math.min(rows.length, 20); i++) {
             const cells = (rows[i] || []).map(c => String(c ?? '').trim().toUpperCase());
@@ -65,10 +81,18 @@
     }
     function mergeToOneFile(files) {
         if (files.length === 1 || typeof XLSX === 'undefined') return files[0];
+        const sig = files.map(f => `${f.name}:${(f.b64 || '').length}`).join('|');
+        try {
+            const cached = JSON.parse(sessionStorage.getItem(MERGED_CACHE_KEY) || 'null');
+            if (cached && cached.sig === sig && cached.b64) {
+                return new File([b64ToBytes(cached.b64)], `合算（${files.length}ファイル）.xlsx`);
+            }
+        } catch (_) {}
+
         let header = null;
         const out = [];
         for (const f of files) {
-            const wb = XLSX.read(Uint8Array.from(atob(f.b64), c => c.charCodeAt(0)), { type: 'array' });
+            const wb = XLSX.read(b64ToBytes(f.b64), { type: 'array' });
             const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
             const h = findHeaderRow(rows);
             const names = (rows[h] || []).map(c => String(c ?? '').trim());
@@ -78,7 +102,10 @@
         }
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(out), 'Data');
-        const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+        const buf = new Uint8Array(XLSX.write(wb, { type: 'array', bookType: 'xlsx' }));
+        try {
+            sessionStorage.setItem(MERGED_CACHE_KEY, JSON.stringify({ sig, b64: bytesToB64(buf) }));
+        } catch (_) {}
         return new File([buf], `合算（${files.length}ファイル）.xlsx`);
     }
 
@@ -290,7 +317,11 @@
     window.TBShared = { load: loadStore, loadDdSettings, loadExtra, saveExtra, renderBanner };
 
     if (IS_VIEWER) {
-        window.addEventListener('load', feedFromPublished);
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', feedFromPublished);
+        } else {
+            feedFromPublished();
+        }
         return;
     }
 
