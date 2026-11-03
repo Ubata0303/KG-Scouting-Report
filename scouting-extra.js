@@ -693,84 +693,62 @@
         return current;
     }
 
-    // PDF描画オペレータからフィールドを囲む太枠の上辺Y座標（top）を検出する
-    function detectFieldBoxTopY(opList, pageHeight, pageWidth, pdfjsLib) {
-        if (!opList || !opList.fnArray || !pdfjsLib) return null;
-        const minSpanW = (pageWidth || 600) * 0.45;
-        let minBoxTop = null;
-        try {
-            for (let i = 0; i < opList.fnArray.length; i++) {
-                if (opList.fnArray[i] !== pdfjsLib.OPS.constructPath) continue;
-                const args = opList.argsArray[i];
-                if (!args || args.length < 2) continue;
-                const ops = args[0] || [];
-                const coords = args[1] || [];
-                let cIdx = 0;
-                let lastX = null;
-                let lastY = null;
-                for (let j = 0; j < ops.length; j++) {
-                    const op = ops[j];
-                    if (op === pdfjsLib.OPS.moveTo) {
-                        lastX = coords[cIdx++];
-                        lastY = coords[cIdx++];
-                    } else if (op === pdfjsLib.OPS.lineTo) {
-                        const x = coords[cIdx++];
-                        const y = coords[cIdx++];
-                        if (lastX !== null && lastY !== null && Math.abs(y - lastY) < 2 && Math.abs(x - lastX) >= minSpanW) {
-                            const top = pageHeight - y;
-                            if (top >= 25 && top <= 120 && (minBoxTop === null || top < minBoxTop)) {
-                                minBoxTop = top;
-                            }
-                        }
-                        lastX = x;
-                        lastY = y;
-                    } else if (op === pdfjsLib.OPS.rectangle) {
-                        const rx = coords[cIdx++];
-                        const ry = coords[cIdx++];
-                        const rw = coords[cIdx++];
-                        const rh = coords[cIdx++];
-                        if (Math.abs(rw) >= minSpanW && Math.abs(rh) >= 50) {
-                            const top = pageHeight - Math.max(ry, ry + rh);
-                            if (top >= 25 && top <= 120 && (minBoxTop === null || top < minBoxTop)) {
-                                minBoxTop = top;
-                            }
-                        }
-                    } else if (op === pdfjsLib.OPS.curveTo) {
-                        cIdx += 6;
-                    } else if (op === pdfjsLib.OPS.curveTo2 || op === pdfjsLib.OPS.curveTo3) {
-                        cIdx += 4;
-                    }
-                }
-            }
-        } catch (_) {}
-        return minBoxTop;
-    }
-
-    // ページのトークンからPlay Diagramメタデータを抽出する（太枠の線より上にあるタイトル1行のみを対象）
-    function extractPlayDiagramMeta(tokens, boxTopY) {
-        const maxHeaderTop = (boxTopY && boxTopY > 30) ? (boxTopY - 1) : 72;
-        const candidateTopTokens = tokens.filter(t => t.top <= maxHeaderTop);
+    // ページのトークンからPlay Diagramメタデータを抽出する（最上部のタイトル1行のみを対象とし、太枠内の文字を除外）
+    function extractPlayDiagramMeta(tokens) {
+        const candidateTopTokens = tokens.filter(t => t.top <= 100);
         if (!candidateTopTokens.length) return null;
 
-        // 最上部のタイトル行の基準Y座標を特定（#数字 / vs / スラッシュ を含む最上部トークン）
-        const headerAnchor = candidateTopTokens
-            .slice()
-            .sort((a, b) => a.top - b.top)
-            .find(t => /#\d+|vs|\//i.test(t.text)) || candidateTopTokens.reduce((min, t) => (t.top < min.top ? t : min), candidateTopTokens[0]);
+        // 上部のトークンをY座標（行ごと、差5.5pt以内）にグループ化し、上から順番にタイトル行を探す
+        const sortedByTop = candidateTopTokens.slice().sort((a, b) => a.top - b.top);
+        const topLines = [];
+        for (const tok of sortedByTop) {
+            let placed = false;
+            for (const line of topLines) {
+                if (Math.abs(tok.top - line.baseTop) <= 5.5) {
+                    line.tokens.push(tok);
+                    placed = true;
+                    break;
+                }
+            }
+            if (!placed) {
+                topLines.push({ baseTop: tok.top, tokens: [tok] });
+            }
+        }
 
-        const headerLineTop = headerAnchor.top;
+        const headerPattern = /#\d+|vs|[1-4]\s*[-–]\s*\d+|GUN|TRIP|TRIO|ACE|TWIN|FLEX|EMPTY|I\s*FORM|PRO|WING|BUNCH|STACK|SPREAD|PISTOL|UNB/i;
+        let combinedTopText = '';
 
-        // タイトル行と同じ高さ（±4.5pt以内＝太枠の外側）のトークンのみをX座標順に並べる
-        const topTokens = candidateTopTokens
-            .filter(t => Math.abs(t.top - headerLineTop) <= 4.5)
-            .sort((a, b) => a.x - b.x);
+        // 最上部の1行だけでタイトル条件（スラッシュ2つ以上＆キーワード）を満たす行を優先採用
+        // （これにより、太枠の線より下にある「3」や「1/2」などの別行トークンが混入するのを防ぐ）
+        for (const line of topLines) {
+            const lineText = line.tokens
+                .slice()
+                .sort((a, b) => a.x - b.x)
+                .map(t => t.text)
+                .join(' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+            const sc = (lineText.match(/\//g) || []).length;
+            if (sc >= 2 && headerPattern.test(lineText)) {
+                combinedTopText = lineText;
+                break;
+            }
+        }
 
-        let combinedTopText = topTokens.map(t => t.text).join(' ').replace(/\s+/g, ' ').trim();
+        // 万が一、タイトル自体が複数トークンで微妙にY座標がずれていた場合のフォールバック（太枠内の単独数字・分数は除外）
+        if (!combinedTopText) {
+            const fallbackTokens = tokens
+                .filter(t => t.top <= 90)
+                .filter(t => !/^(?:[1-4]|[1-4]\s*\/\s*[1-4]|\d{1,2}\s*y(?:ds?)?)$/i.test(t.text.trim()))
+                .sort((a, b) => a.x - b.x);
+            combinedTopText = fallbackTokens.map(t => t.text).join(' ').replace(/\s+/g, ' ').trim();
+        }
+
         combinedTopText = combinedTopText.replace(/\s+[1-4]\s*\/\s*[1-4]\s*$/g, '').trim();
 
         // スラッシュを2つ以上含み、かつ #数字 / vs / Down-Dist / 代表的な体型名を含むかチェック
         const slashCount = (combinedTopText.match(/\//g) || []).length;
-        if (slashCount < 2 || !/#\d+|vs|[1-4]\s*[-–]\s*\d+|GUN|TRIP|TRIO|ACE|TWIN|FLEX|EMPTY|I\s*FORM|PRO|WING|BUNCH|STACK|SPREAD|PISTOL/i.test(combinedTopText)) {
+        if (slashCount < 2 || !headerPattern.test(combinedTopText)) {
             return null;
         }
 
@@ -1161,13 +1139,8 @@
                 });
             }
 
-            // 5. Play Diagram（プレー図面）ページ（太枠の上辺Y座標を検出して枠内の文字を除外）
-            let boxTopY = null;
-            try {
-                const pdOpList = await page.getOperatorList();
-                boxTopY = detectFieldBoxTopY(pdOpList, viewport.height, viewport.width, pdfjsLib);
-            } catch (_) {}
-            const pdMeta = extractPlayDiagramMeta(tokens, boxTopY);
+            // 5. Play Diagram（プレー図面）ページ
+            const pdMeta = extractPlayDiagramMeta(tokens);
             if (pdMeta) {
                 const image = await renderPageToJpeg(page, 560);
                 playDiagrams.push({
