@@ -108,11 +108,34 @@
         return null;
     }
 
-    // 過去に取り込んだ図面データも含め、新フォーマットからPersonnel/Hashを自動復元する
+    // 図面枠内上部の無関係な文字（パスターゲット番号 1〜4、左上の 1/2 表記、20y 等の深さ表記）をPlay名から除去する
+    function cleanPlayNameNoise(str) {
+        let s = String(str || '').trim();
+        if (!s) return '';
+        // 表記揺れの正規化（例: "3 STEP" -> "3STEP"）
+        s = s.replace(/\b([1235])\s+STEP\b/gi, '$1STEP').replace(/\s+/g, ' ').trim();
+        let prev = '';
+        while (s !== prev) {
+            prev = s;
+            // 末尾に混入した "1 / 2" や "1/2", "1/3", "1/4" などの分数表記を除去
+            s = s.replace(/(?:\s+|\/)+[1-4]\s*\/\s*[1-4]\s*$/g, '').trim();
+            // 先頭に混入した "1/2 " などの分数表記を除去
+            s = s.replace(/^[1-4]\s*\/\s*[1-4](?:\s+|\/)+/g, '').trim();
+            // 末尾に混入したヤード表記（例: "20y", "15y", "10yds"）を除去
+            s = s.replace(/\s+\d{1,2}\s*y(?:ds?)?\s*$/i, '').trim();
+            // 末尾にスペース区切りで付着した単独のパスターゲット番号（1〜4）を除去
+            s = s.replace(/\s+[1-4]\s*$/g, '').trim();
+        }
+        return s;
+    }
+
+    // 過去に取り込んだ図面データも含め、新フォーマットからPersonnel/Hashを自動復元＆枠内ノイズ文字を除去する
     function ensureDiagramMeta(d) {
         if (!d) return d;
-        const raw = (d.title || d.rawHeader || '').trim();
+        let raw = (d.title || d.rawHeader || '').trim();
         if (raw && raw.includes('/')) {
+            // スラッシュ分割前に末尾の "1/2" 等の枠内分数ノイズを除去
+            raw = raw.replace(/\s+[1-4]\s*\/\s*[1-4]\s*$/g, '').trim();
             const rawParts = raw.split('/').map(s => s.trim());
             const parts = rawParts.slice(1);
             if (parts.length >= 5) {
@@ -150,6 +173,9 @@
                 d.formation = pParts[1] || '';
                 d.playName = pParts.slice(2).join(' / ').trim();
             }
+        }
+        if (d.playName) {
+            d.playName = cleanPlayNameNoise(d.playName);
         }
         if (d.downDist && (!d.down || !d.distance)) {
             const ddM = d.downDist.match(/^([1-4])\s*[-–/]\s*(\S+)/);
@@ -667,14 +693,80 @@
         return current;
     }
 
-    // ページのトークンからPlay Diagramメタデータを抽出する
-    function extractPlayDiagramMeta(tokens) {
-        // 上部 (top <= 90) のトークンをX座標順に並べる
-        const topTokens = tokens
-            .filter(t => t.top <= 90)
+    // PDF描画オペレータからフィールドを囲む太枠の上辺Y座標（top）を検出する
+    function detectFieldBoxTopY(opList, pageHeight, pageWidth, pdfjsLib) {
+        if (!opList || !opList.fnArray || !pdfjsLib) return null;
+        const minSpanW = (pageWidth || 600) * 0.45;
+        let minBoxTop = null;
+        try {
+            for (let i = 0; i < opList.fnArray.length; i++) {
+                if (opList.fnArray[i] !== pdfjsLib.OPS.constructPath) continue;
+                const args = opList.argsArray[i];
+                if (!args || args.length < 2) continue;
+                const ops = args[0] || [];
+                const coords = args[1] || [];
+                let cIdx = 0;
+                let lastX = null;
+                let lastY = null;
+                for (let j = 0; j < ops.length; j++) {
+                    const op = ops[j];
+                    if (op === pdfjsLib.OPS.moveTo) {
+                        lastX = coords[cIdx++];
+                        lastY = coords[cIdx++];
+                    } else if (op === pdfjsLib.OPS.lineTo) {
+                        const x = coords[cIdx++];
+                        const y = coords[cIdx++];
+                        if (lastX !== null && lastY !== null && Math.abs(y - lastY) < 2 && Math.abs(x - lastX) >= minSpanW) {
+                            const top = pageHeight - y;
+                            if (top >= 25 && top <= 120 && (minBoxTop === null || top < minBoxTop)) {
+                                minBoxTop = top;
+                            }
+                        }
+                        lastX = x;
+                        lastY = y;
+                    } else if (op === pdfjsLib.OPS.rectangle) {
+                        const rx = coords[cIdx++];
+                        const ry = coords[cIdx++];
+                        const rw = coords[cIdx++];
+                        const rh = coords[cIdx++];
+                        if (Math.abs(rw) >= minSpanW && Math.abs(rh) >= 50) {
+                            const top = pageHeight - Math.max(ry, ry + rh);
+                            if (top >= 25 && top <= 120 && (minBoxTop === null || top < minBoxTop)) {
+                                minBoxTop = top;
+                            }
+                        }
+                    } else if (op === pdfjsLib.OPS.curveTo) {
+                        cIdx += 6;
+                    } else if (op === pdfjsLib.OPS.curveTo2 || op === pdfjsLib.OPS.curveTo3) {
+                        cIdx += 4;
+                    }
+                }
+            }
+        } catch (_) {}
+        return minBoxTop;
+    }
+
+    // ページのトークンからPlay Diagramメタデータを抽出する（太枠の線より上にあるタイトル1行のみを対象）
+    function extractPlayDiagramMeta(tokens, boxTopY) {
+        const maxHeaderTop = (boxTopY && boxTopY > 30) ? (boxTopY - 1) : 72;
+        const candidateTopTokens = tokens.filter(t => t.top <= maxHeaderTop);
+        if (!candidateTopTokens.length) return null;
+
+        // 最上部のタイトル行の基準Y座標を特定（#数字 / vs / スラッシュ を含む最上部トークン）
+        const headerAnchor = candidateTopTokens
+            .slice()
+            .sort((a, b) => a.top - b.top)
+            .find(t => /#\d+|vs|\//i.test(t.text)) || candidateTopTokens.reduce((min, t) => (t.top < min.top ? t : min), candidateTopTokens[0]);
+
+        const headerLineTop = headerAnchor.top;
+
+        // タイトル行と同じ高さ（±4.5pt以内＝太枠の外側）のトークンのみをX座標順に並べる
+        const topTokens = candidateTopTokens
+            .filter(t => Math.abs(t.top - headerLineTop) <= 4.5)
             .sort((a, b) => a.x - b.x);
 
-        const combinedTopText = topTokens.map(t => t.text).join(' ').replace(/\s+/g, ' ').trim();
+        let combinedTopText = topTokens.map(t => t.text).join(' ').replace(/\s+/g, ' ').trim();
+        combinedTopText = combinedTopText.replace(/\s+[1-4]\s*\/\s*[1-4]\s*$/g, '').trim();
 
         // スラッシュを2つ以上含み、かつ #数字 / vs / Down-Dist / 代表的な体型名を含むかチェック
         const slashCount = (combinedTopText.match(/\//g) || []).length;
@@ -742,8 +834,8 @@
             }
         }
 
-        // 表記揺れの正規化（例: "3 STEP" -> "3STEP"）
-        playName = playName.replace(/\b([1235])\s+STEP\b/gi, '$1STEP').replace(/\s+/g, ' ').trim();
+        // 表記揺れの正規化＆枠内ノイズ除去
+        playName = cleanPlayNameNoise(playName);
         formation = formation.replace(/\s+/g, ' ').trim();
         personnel = personnel.replace(/\s+/g, '').trim();
         hash = hash.replace(/\s+/g, '').toUpperCase();
@@ -1069,10 +1161,15 @@
                 });
             }
 
-            // 5. Play Diagram（プレー図面）ページ
-            const pdMeta = extractPlayDiagramMeta(tokens);
+            // 5. Play Diagram（プレー図面）ページ（太枠の上辺Y座標を検出して枠内の文字を除外）
+            let boxTopY = null;
+            try {
+                const pdOpList = await page.getOperatorList();
+                boxTopY = detectFieldBoxTopY(pdOpList, viewport.height, viewport.width, pdfjsLib);
+            } catch (_) {}
+            const pdMeta = extractPlayDiagramMeta(tokens, boxTopY);
             if (pdMeta) {
-                const image = await renderPageToJpeg(page, 640);
+                const image = await renderPageToJpeg(page, 560);
                 playDiagrams.push({
                     page: p,
                     sourcePdf: file.name,
